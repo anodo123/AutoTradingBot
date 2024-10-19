@@ -75,7 +75,8 @@ def access_web_socket(request):
 
         if access_token not in [None, ""]:
             # Step 4: Start Zerodha WebSocket in a separate thread after setting the access token
-            websocket_thread = threading.Thread(target=run_script.run_websocket, args=(kite,access_token))
+            instrument_details = view_all_added_trading_instrument()
+            websocket_thread = threading.Thread(target=run_script.run_websocket, args=(kite,access_token,instrument_details))
             websocket_thread.start()
 
             return JsonResponse({"access_token": access_token})
@@ -237,3 +238,12 @@ def update_trading_instrument(request):
     except Exception as error:
         return JsonResponse({"Some Error Occured":str(error)},status = 500)
     
+
+def view_all_added_trading_instrument():
+    try:
+        client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}/")
+        database = client[mongo_database]  # Access the database
+        collection = database['tradeconfiguration']  # Replace 'mycollection' with your collection name
+        return list(collection.find({},{"_id":0}))
+    except Exception as error:
+        return []

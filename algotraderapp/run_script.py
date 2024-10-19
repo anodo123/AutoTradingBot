@@ -128,33 +128,94 @@ class CandleAggregator:
 
         return stop_loss
     
-    def place_order(self, kite, instrument_token, order_type, quantity, stop_loss):
-        """ Place an order using Kite Connect API. """
+    def place_order(kite, instrument_token, order_type, quantity, stop_loss, price=None):
         try:
-            order_params = {
-                "exchange": "NSE",  # or "BSE" based on your needs
-                "tradingsymbol": instrument_token,
-                "transaction_type": order_type,
-                "quantity": quantity,
-                "order_type": "MARKET",  # You can choose "LIMIT" if needed
-                "product": "MIS",  # For intraday trading
-                "stop_loss": stop_loss  # Pass the exact stop loss value
-            }
+            # Check for existing orders
+            existing_orders = kite.orders()
+            for order in existing_orders:
+                if order['tradingsymbol'] == instrument_token and order['status'] in ['OPEN', 'REOPEN']:
+                    logging.info(f"An order already exists for {instrument_token}. Not placing a new order.")
+                    return  # Exit if an order is already placed
 
-            # Place the order
-            order_id = kite.place_order(**order_params)
-            logging.info(f"Order placed successfully: {order_id}")
+            # If no existing order, proceed to place a new one
+            if order_type == "Buy":
+                order_id = kite.place_order(
+                    variety=kite.VARIETY_REGULAR,
+                    exchange=kite.EXCHANGE_NSE,
+                    tradingsymbol=instrument_token,
+                    transaction_type=kite.TRANSACTION_TYPE_BUY,
+                    quantity=quantity,
+                    order_type=kite.ORDER_TYPE_MARKET,  # or LIMIT if you specify a price
+                    product=kite.PRODUCT_MIS,  # or CNC for delivery
+                    trigger_price=stop_loss  # This is the stop-loss for Buy
+                )
+            elif order_type == "Sell":
+                order_id = kite.place_order(
+                    variety=kite.VARIETY_REGULAR,
+                    exchange=kite.EXCHANGE_NSE,
+                    tradingsymbol=instrument_token,
+                    transaction_type=kite.TRANSACTION_TYPE_SELL,
+                    quantity=quantity,
+                    order_type=kite.ORDER_TYPE_MARKET,  # or LIMIT if you specify a price
+                    product=kite.PRODUCT_MIS,
+                    trigger_price=stop_loss  # This is the stop-loss for Sell
+                )
             return order_id
         except Exception as e:
             logging.error(f"Error placing order: {str(e)}")
             return None
+
+    def update_trailing_stop_loss(self, kite, percentage):
+        """ Update trailing stop loss for open orders based on the latest candle values. """
+        if len(self.candles) < 2:
+            return  # Not enough candles to calculate trailing stop loss
+
+        prev_candle_1 = self.candles[-1]
+        prev_candle_2 = self.candles[-2]
+
+        x_value_higher = max(prev_candle_1['high'], prev_candle_2['high'])
+        x_value_lower = min(prev_candle_1['low'], prev_candle_2['low'])
+
+        # Fetch open orders from Kite
+        open_orders = kite.orders()
+
+        for order in open_orders:
+            if order['status'] != 'OPEN':
+                continue  # Skip closed orders
+
+            instrument_token = order['tradingsymbol']
+            order_type = order['transaction_type']  # Ensure you get the right order type
+
+            # Calculate new trailing stop loss
+            if order_type == "BUY":
+                new_stop_loss = math.floor(x_value_lower - (percentage / 100 * x_value_lower))
+                # Update the stop loss if the new stop loss is higher
+                #if new_stop_loss > order['stop_loss']:  # Ensure you're accessing the correct key
+                # Kite API does not allow direct modification of the order object; you'll need to update the order via the API
+                kite.modify_order(
+                    order_id=order['order_id'],  # Ensure to use the correct order ID
+                    trigger_price=new_stop_loss
+                )
+                logging.info(f"Updated trailing stop loss for Buy order of {instrument_token} to {new_stop_loss}")
+
+            elif order_type == "SELL":
+                new_stop_loss = math.ceil(x_value_higher + (percentage / 100 * x_value_higher))
+                # Update the stop loss if the new stop loss is lower
+                #if new_stop_loss < order['stop_loss']:  # Ensure you're accessing the correct key
+                # Kite API does not allow direct modification of the order object; you'll need to update the order via the API
+                kite.modify_order(
+                    order_id=order['order_id'],  # Ensure to use the correct order ID
+                    trigger_price=new_stop_loss
+                )
+                logging.info(f"Updated trailing stop loss for Sell order of {instrument_token} to {new_stop_loss}")
+
 
 
     def save_candles(self):
         """ Placeholder for saving candles to a database or file. """
         pass
 # WebSocket Runner with Candle Aggregation
-def run_websocket(kite, access_token, tokens=[]):
+def run_websocket(kite, access_token, instrument_details=[]):
     kws = KiteTicker(os.getenv("api_key"), access_token)
     tokens = [110667015]  # Your token list
     percentage = .04
@@ -175,8 +236,18 @@ def run_websocket(kite, access_token, tokens=[]):
         # Process the tick data for candlestick generation
         candle_aggregator.process_tick(ticks[0])
         signal = candle_aggregator.check_strategy(instrument_token, percentage)
+        # Update trailing stop loss for open orders based on latest candle values
+        candle_aggregator.update_trailing_stop_loss(kite, percentage)
         # Print ticks (for debugging purposes)
         # print(ticks)
+        # Place order based on the generated signal
+        if signal:
+            order_type = signal['order_type']
+            stop_loss = signal['stop_loss']
+            quantity = 1  # Define your quantity as needed
+
+            # Call the place_order function with appropriate parameters
+            candle_aggregator.place_order(kite, instrument_token, order_type, quantity, stop_loss)
     
     
 
