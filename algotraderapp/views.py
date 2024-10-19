@@ -76,8 +76,10 @@ def access_web_socket(request):
         if access_token not in [None, ""]:
             # Step 4: Start Zerodha WebSocket in a separate thread after setting the access token
             instrument_details = view_all_added_trading_instrument()
-            websocket_thread = threading.Thread(target=run_script.run_websocket, args=(kite,access_token,instrument_details))
-            websocket_thread.start()
+            ws_handler = run_script.WebSocketHandler(kite, instrument_details)
+            threading.Thread(target=ws_handler.run_websocket).start()
+            # websocket_thread = threading.Thread(target=run_script.run_websocket, args=(kite,access_token,instrument_details))
+            # websocket_thread.start()
 
             return JsonResponse({"access_token": access_token})
         

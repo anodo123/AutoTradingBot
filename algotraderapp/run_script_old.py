@@ -6,17 +6,15 @@ from django.http import JsonResponse
 from kiteconnect import KiteConnect, KiteTicker
 import time
 import datetime
-from .product_setting import REDIS_HOST, REDIS_PORT, REDIS_DB
+from .product_setting import REDIS_HOST,REDIS_PORT,REDIS_DB
 import redis
 import math
-
 # Initialize Redis client using Django settings
 redis_client = redis.StrictRedis(
     host=REDIS_HOST,
     port=REDIS_PORT,
     db=REDIS_DB
 )
-
 logging.basicConfig(level=logging.DEBUG)
 
 # Candle Aggregator Class
@@ -36,26 +34,26 @@ class CandleAggregator:
                     self.candles = []
         else:
             self.candles = []
-
+    
     def save_candles(self):
         """ Save candles to the JSON file. """
         with open(self.file_path, 'w') as file:
             json.dump(self.candles, file, indent=4)
-
+    
     def process_tick(self, tick):
         """ Process a new tick and update the candle data. """
         last_price = tick['last_price']
         tick_time = datetime.datetime.strptime(tick['current_datetime'], '%Y-%m-%d %H:%M:%S')
-
+        
         # Round the time to the nearest candle start time
         candle_start_time = tick_time.replace(minute=(tick_time.minute // self.interval_minutes) * self.interval_minutes, second=0, microsecond=0)
-
+        
         if self.current_candle is None or candle_start_time != self.current_candle['start_time']:
             # If this is a new candle, store the previous one and start a new one
             if self.current_candle is not None:
                 self.candles.append(self.current_candle)
                 self.save_candles()  # Save candles after every 15-minute interval
-
+            
             # Start a new candle
             self.current_candle = {
                 'start_time': candle_start_time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -71,19 +69,18 @@ class CandleAggregator:
             self.current_candle['low'] = min(self.current_candle['low'], last_price)
             self.current_candle['close'] = last_price
             self.current_candle['volume'] += tick['last_traded_quantity']
-
-    def check_strategy(self, instrument_token, percentage):
+    def check_strategy(self,instrument_token, percentage):
         """ Check the strategy based on the previous two candles and the percentage for buy/sell signals. """
         if len(self.candles) < 2:
             return None  # Not enough candles to make a decision
 
         prev_candle_1 = self.candles[-1]  # Most recent completed candle
         prev_candle_2 = self.candles[-2]  # The candle before the most recent one
-
+        
         # Calculate the high and low for the strategy
         max_high = max(prev_candle_1['high'], prev_candle_2['high'])
         min_low = min(prev_candle_1['low'], prev_candle_2['low'])
-
+        
         # Calculate x_value_higher and x_value_lower using the user-defined percentage
         self.x_value_higher = math.ceil(max_high + (percentage / 100 * max_high))
         self.x_value_lower = math.floor(min_low - (percentage / 100 * min_low))
@@ -91,7 +88,7 @@ class CandleAggregator:
         # Get the current candle's high and low values
         current_high = self.current_candle['high']
         current_low = self.current_candle['low']
-
+        
         # Initialize response data
         response = {}
 
@@ -112,9 +109,11 @@ class CandleAggregator:
             }
 
         return response
+        
 
     def calculate_stop_loss(self, order_type, percentage):
         """ Calculate the stop loss for the current order based on previous candles. """
+        # Retrieve the most recent two candles
         prev_candle_1 = self.candles[-1]
         prev_candle_2 = self.candles[-2]
 
@@ -193,6 +192,8 @@ class CandleAggregator:
             # Calculate new trailing stop loss
             if order_type == "BUY":
                 new_stop_loss = math.floor(x_value_lower - (percentage / 100 * x_value_lower))
+                # Update the stop loss if the new stop loss is higher
+                #if new_stop_loss > order['stop_loss']:  # Ensure you're accessing the correct key
                 # Kite API does not allow direct modification of the order object; you'll need to update the order via the API
                 kite.modify_order(
                     order_id=order['order_id'],  # Ensure to use the correct order ID
@@ -202,6 +203,8 @@ class CandleAggregator:
 
             elif order_type == "SELL":
                 new_stop_loss = math.ceil(x_value_higher + (percentage / 100 * x_value_higher))
+                # Update the stop loss if the new stop loss is lower
+                #if new_stop_loss < order['stop_loss']:  # Ensure you're accessing the correct key
                 # Kite API does not allow direct modification of the order object; you'll need to update the order via the API
                 kite.modify_order(
                     order_id=order['order_id'],  # Ensure to use the correct order ID
@@ -209,57 +212,72 @@ class CandleAggregator:
                 )
                 logging.info(f"Updated trailing stop loss for Sell order of {instrument_token} to {new_stop_loss}")
 
-# WebSocket Handler Class
-class WebSocketHandler:
-    def __init__(self, kite, instruments):
-        self.kite = kite
-        self.kite_ticker = KiteTicker(kite.api_key, kite.access_token)
-        self.instruments = instruments
-        self.candle_aggregator = CandleAggregator()
-        self.quantity = 1  # Define your quantity for orders
 
-        # Define on_ticks method
-        self.kite_ticker.on_ticks = self.on_ticks
-        self.kite_ticker.on_connect = self.on_connect
-        self.kite_ticker.on_close = self.on_close
 
-    def on_connect(self, ws, response):
-        logging.info("WebSocket connected. Subscribing to instruments.")
-        self.kite_ticker.subscribe(self.instruments)
+    def save_candles(self):
+        """ Placeholder for saving candles to a database or file. """
+        pass
+# WebSocket Runner with Candle Aggregation
+def run_websocket(kite, access_token, instrument_details=[]):
+    kws = KiteTicker(os.getenv("api_key"), access_token)
+    tokens = [110667015]  # Your token list
+    percentage = .04
+    # Instantiate CandleAggregator globally
+    global candle_aggregator
+    candle_aggregator = CandleAggregator(interval_minutes=15, file_path="15_minute_candles.json")
 
-    def on_close(self, ws, code, reason):
-        logging.info("WebSocket closed.")
+    def on_tick(ws, ticks):
+        # Add current timestamp to the tick data
+        ticks[0]['current_datetime'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Store tick data in Redis based on instrument token
+        instrument_token = ticks[0]['instrument_token']
+        redis_key = f"tick:{instrument_token}"
+        print("ticks",ticks)
+        # Store the tick data in Redis
+        redis_client.lpush(redis_key, json.dumps(ticks[0]))
+        # Process the tick data for candlestick generation
+        candle_aggregator.process_tick(ticks[0])
+        signal = candle_aggregator.check_strategy(instrument_token, percentage)
+        # Update trailing stop loss for open orders based on latest candle values
+        candle_aggregator.update_trailing_stop_loss(kite, percentage)
+        # Print ticks (for debugging purposes)
+        # print(ticks)
+        # Place order based on the generated signal
+        if signal:
+            order_type = signal['order_type']
+            stop_loss = signal['stop_loss']
+            quantity = 1  # Define your quantity as needed
 
-    def on_ticks(self, ws, ticks):
-        # Process each tick and store candles
-        for tick in ticks:
-            self.candle_aggregator.process_tick(tick)
+            # Call the place_order function with appropriate parameters
+            candle_aggregator.place_order(kite, instrument_token, order_type, quantity, stop_loss)
+    
+    
 
-            # Fetch percentage from instrument details
-            instrument_token = tick['tradingsymbol']
-            percentage = self.instruments[instrument_token]['trade_calculation_percentage']
+    def on_connect(ws, response):
+        logging.info("Successfully connected to WebSocket")
+        for token in tokens:
+            logging.info("Subscribing to: {}".format(token))
+            kws.subscribe([token])
+            kws.set_mode(kws.MODE_QUOTE, [token])
 
-            # Check strategy for each instrument
-            strategy_response = self.candle_aggregator.check_strategy(instrument_token, percentage)
-            if strategy_response:
-                order_id = self.candle_aggregator.place_order(
-                    self.kite,
-                    instrument_token,
-                    strategy_response['order_type'],
-                    self.quantity,
-                    strategy_response['stop_loss']
-                )
-                if order_id:
-                    logging.info(f"Order placed: {order_id} for {strategy_response['order_type']} {instrument_token}")
+    def on_close(ws, code, reason):
+        logging.info("WebSocket connection closed",reason)
 
-    def run_websocket(self):
-        """ Start the WebSocket and listen for ticks. """
-        while True:
-            try:
-                self.kite_ticker.connect(threaded=True)
-                break
-            except Exception as e:
-                logging.error(f"Error connecting WebSocket: {e}")
-                time.sleep(5)  # Wait before retrying
+    def on_error(ws, code, reason):
+        logging.error("Connection error: {code} - {reason}".format(code=code, reason=reason))
 
+    kws.on_ticks = on_tick
+    kws.on_connect = on_connect
+    kws.on_close = on_close
+    kws.on_error = on_error
+
+    kws.connect(threaded=True)
+
+    while True:
+        if kws.is_connected():
+            logging.info("WebSocket is connected and running.")
+        else:
+            logging.info("WebSocket is not connected, attempting to reconnect...")
+        time.sleep(5)
 
