@@ -38,7 +38,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'algotraderapp',
-    'rest_framework'
+    'rest_framework',
+    'channels'
 ]
 
 MIDDLEWARE = [
@@ -70,6 +71,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'Algotrader.wsgi.application'
+#ASGI_APPLICATION = 'Algotrader.asgi.application'
 
 
 # Database
@@ -85,6 +87,15 @@ DATABASES = {
 # myproject/settings.py
 
 REST_FRAMEWORK = {}
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
+    },
+}
 
 
 # Password validation
