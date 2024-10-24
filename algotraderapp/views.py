@@ -18,6 +18,10 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from . import run_script
+# Global variable to hold the WebSocket handler
+ws_handler = None
+ws_lock = threading.Lock()
+
 env_path = Path('./.env')
 load_dotenv(dotenv_path=env_path)
 kite = KiteConnect(api_key=os.getenv("api_key"))
@@ -42,8 +46,6 @@ def generate_session(request):
     try:
         request_token = request.POST['request_token']
         # Assuming you have initialized KiteConnect instance with api_key
-        kite = KiteConnect(api_key=os.getenv("api_key"))
-
         # Generate session using the request token and secret
         data = kite.generate_session(request_token, api_secret=os.getenv("api_secret"))
         #access_token = os.getenv('access_token')  # Change to access the real token from generated session response
@@ -68,26 +70,25 @@ def generate_session(request):
 
 @api_view(['POST'])
 def access_web_socket(request):
+    global ws_handler
     try:
-        access_token = os.getenv('access_token')  # Change to access the real token from generated session response
-        access_token = "nSPS2YZP2ltF66wxl1mw3J7yeM5gz6O7"
-        #access_token = data['access_token']
+        access_token = os.getenv('access_token')
+        kite.set_access_token(access_token)
 
         if access_token not in [None, ""]:
-            # Step 4: Start Zerodha WebSocket in a separate thread after setting the access token
-            instrument_details = view_all_added_trading_instrument()
-            ws_handler = run_script.WebSocketHandler(kite, instrument_details)
-            threading.Thread(target=ws_handler.run_websocket).start()
-            # websocket_thread = threading.Thread(target=run_script.run_websocket, args=(kite,access_token,instrument_details))
-            # websocket_thread.start()
+            with ws_lock:
+                # Check if WebSocket handler is already running
+                if ws_handler is None:
+                    instrument_details = view_all_added_trading_instrument()
+                    ws_handler = run_script.WebSocketHandler(kite, instrument_details)
+                    threading.Thread(target=ws_handler.run_websocket).start()
 
             return JsonResponse({"access_token": access_token})
-        
+
         return JsonResponse({"Some Error Occurred": True}, status=500)
 
     except Exception as error:
         return JsonResponse({"Some Error Occurred": str(error)}, status=500)
-
 @api_view(['POST'])
 def download_all_instruments(request):
     try:

@@ -19,23 +19,23 @@ redis_client = redis.StrictRedis(
 
 logging.basicConfig(level=logging.DEBUG)
 
-# Candle Aggregator Class
+
 class CandleAggregator:
     def __init__(self, instrument_token, interval_minutes=15, file_path='15_minute_candles.json'):
+        self.file_path = str(instrument_token) + '_' + file_path
         self.instrument_token = instrument_token  # Add the instrument token
         self.interval_minutes = interval_minutes
         self.current_candle = None
-        self.candles = []
-        self.file_path = file_path
-        
-        #attributes for order management
+        self.candles = []  # This can remain as a list if needed elsewhere
+
+        # Attributes for order management
         self.current_stop_loss = None
         self.current_order_type = None
         self.order_active = False  # Track if an order is active
         
         # Load previous candles from the file, if available
-        if os.path.exists(file_path):
-            with open(file_path, 'r') as file:
+        if os.path.exists(self.file_path):
+            with open(self.file_path, 'r') as file:
                 try:
                     self.candles = json.load(file)
                 except json.JSONDecodeError:
@@ -43,40 +43,73 @@ class CandleAggregator:
         else:
             self.candles = []
 
-    def save_candles(self):
-        """ Save candles to the JSON file. """
+    def save_candles(self, new_candle):
+        # Load existing candles from the file
+        if os.path.exists(self.file_path):
+            with open(self.file_path, 'r') as file:
+                try:
+                    previous_candles = json.load(file)
+                    # Convert the list to a dictionary for easier updates
+                    candle_dict = {candle['start_time']: candle for candle in previous_candles}
+                except json.JSONDecodeError:
+                    candle_dict = {}
+        else:
+            candle_dict = {}
+
+        # Update or add the new candle
+        candle_dict[new_candle['start_time']] = new_candle
+        
+        # Save the updated candles to the JSON file
         with open(self.file_path, 'w') as file:
-            json.dump(self.candles, file, indent=4)
+            json.dump(list(candle_dict.values()), file, indent=4)
+        
+        logging.info(f"Candle with start_time {new_candle['start_time']} updated or added successfully.")
+
+
 
     def process_tick(self, tick):
         """ Process a new tick and update the candle data. """
-        last_price = tick['last_price']
-        tick_time = datetime.datetime.strptime(tick['current_datetime'], '%Y-%m-%d %H:%M:%S')
+        try:
+            # Ensure required fields exist in the tick data
+            if 'last_price' not in tick or 'last_traded_quantity' not in tick or 'current_datetime' not in tick:
+                logging.error(f"Missing required fields in tick: {tick}")
+                return  # Skip processing this tick if essential fields are missing
 
-        # Round the time to the nearest candle start time
-        candle_start_time = tick_time.replace(minute=(tick_time.minute // self.interval_minutes) * self.interval_minutes, second=0, microsecond=0)
+            last_price = tick['last_price']
+            tick_time = datetime.datetime.strptime(str(tick['current_datetime']), '%Y-%m-%d %H:%M:%S.%f')
 
-        if self.current_candle is None or candle_start_time != self.current_candle['start_time']:
-            # If this is a new candle, store the previous one and start a new one
-            if self.current_candle is not None:
-                self.candles.append(self.current_candle)
-                self.save_candles()  # Save candles after every 15-minute interval
+            # Round the time to the nearest candle start time
+            candle_start_time = tick_time.replace(minute=(tick_time.minute // self.interval_minutes) * self.interval_minutes, second=0, microsecond=0)
 
-            # Start a new candle
-            self.current_candle = {
-                'start_time': candle_start_time.strftime('%Y-%m-%d %H:%M:%S'),
-                'open': last_price,
-                'high': last_price,
-                'low': last_price,
-                'close': last_price,
-                'volume': tick['last_traded_quantity']
-            }
-        else:
-            # Update the current candle's OHLC values and volume
-            self.current_candle['high'] = max(self.current_candle['high'], last_price)
-            self.current_candle['low'] = min(self.current_candle['low'], last_price)
-            self.current_candle['close'] = last_price
-            self.current_candle['volume'] += tick['last_traded_quantity']
+            if self.current_candle is None or candle_start_time != self.current_candle['start_time']:
+                # If this is a new candle, store the previous one and start a new one
+                if self.current_candle is not None:
+                    self.candles.append(self.current_candle)
+                    self.save_candles(self.current_candle)  # Save candles after every interval
+
+                # Start a new candle
+                self.current_candle = {
+                    'start_time': candle_start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'open': last_price,
+                    'high': last_price,
+                    'low': last_price,
+                    'close': last_price,
+                    'volume': tick['last_traded_quantity']
+                }
+            else:
+                # Update the current candle's OHLC values and volume
+                self.current_candle['high'] = max(self.current_candle['high'], last_price)
+                self.current_candle['low'] = min(self.current_candle['low'], last_price)
+                self.current_candle['close'] = last_price
+                self.current_candle['volume'] += tick['last_traded_quantity']
+
+        except KeyError as e:
+            logging.error(f"KeyError: Missing expected key {e} in tick: {tick}")
+        except ValueError as e:
+            logging.error(f"ValueError: Invalid value in tick data: {tick}, Error: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error while processing tick: {tick}, Error: {e}")
+
 
     def check_strategy(self, instrument_token, percentage):
         """ Check the strategy based on the previous two candles and the percentage for buy/sell signals. """
@@ -280,15 +313,20 @@ class WebSocketHandler:
         
         # Store instrument details
         self.instruments = instruments
-        self.instrument_tokens = [x['instrument_token'] for x in instruments]
+        self.instrument_tokens = [int(x['instrument_token']) for x in instruments]
         
-        # Create a CandleAggregator instance for each instrument
-        self.candle_aggregators = {x['instrument_token']: CandleAggregator() for x in instruments}
+        # Create a CandleAggregator instance for each instrument, passing the instrument_token
+        self.candle_aggregators = {
+            x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),interval_minutes=5) for x in instruments
+        }
 
         # Define on_ticks method
         self.kite_ticker.on_ticks = self.on_ticks
         self.kite_ticker.on_connect = self.on_connect
         self.kite_ticker.on_close = self.on_close
+        self.kite_ticker.on_error = self.on_error
+        self.kite_ticker.on_noreconnect = self.on_noreconnect
+        self.kite_ticker.on_reconnect = self.on_reconnect
 
     def on_connect(self, ws, response):
         logging.info("WebSocket connected. Subscribing to instruments.")
@@ -296,73 +334,137 @@ class WebSocketHandler:
 
     def on_close(self, ws, code, reason):
         logging.info("WebSocket closed.")
+    def on_error(self, ws, code, reason):
+        logging.error(f"WebSocket encountered an error: Code {code}, Reason: {reason}.")
+        # Handle the error and attempt to reconnect if necessary
+        self.reconnect_websocket()
+
+    def on_noreconnect(self, ws):
+        logging.error("WebSocket reconnection failed permanently.")
+        # You can implement notification or escalation here if needed
+
+    def on_reconnect(self, ws, attempt_count):
+        logging.info(f"WebSocket is attempting to reconnect. Attempt {attempt_count}.")
+
+    def reconnect_websocket(self):
+        """ Close existing connection and attempt reconnection. """
+        try:
+            logging.info("Attempting to reconnect WebSocket...")
+            #self.kite_ticker.close()  # Close the existing connection
+            self.kite_ticker.connect(threaded=True)  # Reconnect
+        except Exception as e:
+            logging.error(f"Error while reconnecting WebSocket: {e}")
 
     def on_ticks(self, ws, ticks):
         # Process each tick and store candles
-        for tick in ticks:
-            instrument_token = tick['instrument_token']
+        try:
+            logging.info(f"Received ticks: {ticks}")
+            print(f"datetime:{datetime.datetime.now()}Received ticks: {ticks}", file=open('ticks.txt', 'a'))
+            for tick in ticks:
+                try:
+                    instrument_token = tick['instrument_token']
 
-            # Get instrument-specific data
-            instrument_data = next((x for x in self.instruments if x['instrument_token'] == instrument_token), None)
-            if instrument_data is None:
-                logging.error(f"Instrument data not found for token: {instrument_token}")
-                continue
+                    # Get instrument-specific data
+                    instrument_data = next((x for x in self.instruments if int(x['instrument_token']) == instrument_token), None)
+                    if instrument_data is None:
+                        logging.error(f"Instrument data not found for token: {instrument_token}")
+                        continue
 
-            lot_size = int(instrument_data['lot_size'])
-            percentage = float(instrument_data['trade_calculation_percentage'])
+                    lot_size = int(instrument_data['lot_size'])
+                    percentage = float(instrument_data['trade_calculation_percentage'])
+                    tick['current_datetime'] = datetime.datetime.now()
 
-            # Process the tick using the respective CandleAggregator for the instrument
-            candle_aggregator = self.candle_aggregators[instrument_token]
-            candle_aggregator.process_tick(tick)
+                    # Process the tick using the respective CandleAggregator for the instrument
+                    candle_aggregator = self.candle_aggregators.get(str(instrument_token))
+                    if candle_aggregator is None:
+                        logging.error(f"Candle aggregator not found for token: {instrument_token}")
+                        continue
 
-            # Update trailing stop loss based on the latest tick
-            new_stop_loss = candle_aggregator.update_trailing_stop_loss(self.kite, percentage)
+                    candle_aggregator.process_tick(tick)
 
-            # Check if the current price hits the stored stop loss
-            current_price = candle_aggregator.current_candle['close']
-            if (candle_aggregator.order_active and
-                    ((candle_aggregator.order_type == 'Buy' and current_price <= candle_aggregator.current_stop_loss) or
-                    (candle_aggregator.order_type == 'Sell' and current_price >= candle_aggregator.current_stop_loss))):
-                
-                # Stop-loss hit, handle reverse order
-                logging.info(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
-                candle_aggregator.handle_reverse_order(instrument_token, {'order_type': candle_aggregator.order_type, 'stop_loss': candle_aggregator.current_stop_loss}, lot_size, percentage)
+                    # Update trailing stop loss based on the latest tick
+                    new_stop_loss = candle_aggregator.update_trailing_stop_loss(self.kite, percentage)
 
-                # Keep the current stop loss and order type to use in reverse order handling
-                # Optionally, deactivate the order if needed for logic clarity
-                candle_aggregator.order_active = False  # Mark order as inactive to prevent new orders until a fresh signal
+                    # Check if the current price hits the stored stop loss
+                    current_price = candle_aggregator.current_candle['close']
+                    if (candle_aggregator.order_active and
+                            ((candle_aggregator.order_type == 'Buy' and current_price <= candle_aggregator.current_stop_loss) or
+                            (candle_aggregator.order_type == 'Sell' and current_price >= candle_aggregator.current_stop_loss))):
+                        
+                        # Stop-loss hit, handle reverse order
+                        logging.info(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
+                        candle_aggregator.handle_reverse_order(
+                            instrument_token, 
+                            {'order_type': candle_aggregator.order_type, 'stop_loss': candle_aggregator.current_stop_loss}, 
+                            lot_size, 
+                            percentage
+                        )
 
-            # Check strategy based on the candle data and the specific percentage
-            strategy_response = candle_aggregator.check_strategy(instrument_token, percentage)
-            if strategy_response and not candle_aggregator.order_active:
-                # Use the instrument's lot_size for the order quantity
-                order_id = candle_aggregator.place_order(
-                    self.kite,
-                    instrument_token,
-                    strategy_response['order_type'],
-                    lot_size,  # Quantity based on the lot size
-                    strategy_response['stop_loss']
-                )
-                if order_id:
-                    logging.info(f"Order placed: {order_id} for {strategy_response['order_type']} {instrument_token}")
+                        # Mark order as inactive to prevent new orders until a fresh signal
+                        candle_aggregator.order_active = False  
 
-                    # Mark the order as active and store the current stop loss and order type
-                    candle_aggregator.order_active = True
-                    candle_aggregator.current_stop_loss = strategy_response['stop_loss']
-                    candle_aggregator.order_type = strategy_response['order_type']
+                    # Check strategy based on the candle data and the specific percentage
+                    strategy_response = candle_aggregator.check_strategy(instrument_token, percentage)
+                    if strategy_response and not candle_aggregator.order_active:
+                        # Place order with lot size and stop loss from strategy
+                        order_id = candle_aggregator.place_order(
+                            self.kite,
+                            instrument_token,
+                            strategy_response['order_type'],
+                            lot_size,  # Quantity based on the lot size
+                            strategy_response['stop_loss']
+                        )
+                        if order_id:
+                            logging.info(f"Order placed: {order_id} for {strategy_response['order_type']} {instrument_token}")
 
-                    # Update trailing stop loss immediately after placing the order
-                    candle_aggregator.update_trailing_stop_loss(self.kite, percentage)
+                            # Mark the order as active and store the current stop loss and order type
+                            candle_aggregator.order_active = True
+                            candle_aggregator.current_stop_loss = strategy_response['stop_loss']
+                            candle_aggregator.order_type = strategy_response['order_type']
+
+                            # Update trailing stop loss immediately after placing the order
+                            candle_aggregator.update_trailing_stop_loss(self.kite, percentage)
+
+                except KeyError as ke:
+                    logging.error(f"KeyError processing tick for token {tick.get('instrument_token', 'Unknown')}: {ke}")
+                except Exception as e:
+                    logging.error(f"Error processing tick for token {tick.get('instrument_token', 'Unknown')}: {e}")
+
+        except Exception as error:
+            logging.error(f"Error in on_ticks: {error}")
+
 
 
 
     def run_websocket(self):
-        """ Start the WebSocket and listen for ticks. """
-        while True:
-            try:
-                self.kite_ticker.connect(threaded=True)
-                break
-            except Exception as e:
-                logging.error(f"Error connecting WebSocket: {e}")
-                time.sleep(5)  # Retry connection every 5 seconds if it fails
+        """ Start the WebSocket and listen for ticks, with connection checks and retries. """
+        # Connect to the WebSocket initially
+        self.kite_ticker.connect(threaded=True)
 
+        # Backoff parameters
+        backoff_time = 5  # Initial backoff time in seconds
+        max_backoff_time = 60  # Maximum backoff time in seconds
+        is_reconnecting = False
+
+        # while True:
+        #     try:
+        #         if self.kite_ticker.is_connected():
+        #             logging.info("WebSocket is connected and running.")
+        #             is_reconnecting = False  # Reset reconnection flag
+        #             backoff_time = 5  # Reset backoff time
+        #         else:
+        #             if not is_reconnecting:
+        #                 logging.info("WebSocket is not connected, attempting to reconnect...")
+        #                 is_reconnecting = True
+
+        #                 # Close existing connection and reconnect
+        #                 #self.kite_ticker.close()
+        #                 time.sleep(10)
+        #                 self.kite_ticker.connect(threaded=True)
+
+        #             time.sleep(backoff_time)  # Wait before next reconnection attempt
+        #             backoff_time = min(max_backoff_time, backoff_time * 2)  # Exponential backoff
+        #     except Exception as e:
+        #         logging.error(f"Error handling WebSocket: {e}")
+        #         time.sleep(backoff_time)  # Wait before retrying on error
+        #         backoff_time = min(max_backoff_time, backoff_time * 2)  # Exponential backoff
