@@ -44,26 +44,32 @@ class CandleAggregator:
             self.candles = []
 
     def save_candles(self, new_candle):
-        # Load existing candles from the file
-        if os.path.exists(self.file_path):
-            with open(self.file_path, 'r') as file:
-                try:
-                    previous_candles = json.load(file)
-                    # Convert the list to a dictionary for easier updates
-                    candle_dict = {candle['start_time']: candle for candle in previous_candles}
-                except json.JSONDecodeError:
-                    candle_dict = {}
-        else:
-            candle_dict = {}
+        try:
+            # Load existing candles from the file
+            if os.path.exists(self.file_path):
+                with open(self.file_path, 'r') as file:
+                    try:
+                        previous_candles = json.load(file)
+                        # Convert the list to a dictionary for easier updates
+                        candle_dict = {candle['start_time']: candle for candle in previous_candles}
+                    except json.JSONDecodeError:
+                        candle_dict = {}
+            else:
+                candle_dict = {}
 
-        # Update or add the new candle
-        candle_dict[new_candle['start_time']] = new_candle
-        
-        # Save the updated candles to the JSON file
-        with open(self.file_path, 'w') as file:
-            json.dump(list(candle_dict.values()), file, indent=4)
-        
-        logging.info(f"Candle with start_time {new_candle['start_time']} updated or added successfully.")
+            # Update or add the new candle
+            candle_dict[new_candle['start_time']] = new_candle
+            
+            # Save the updated candles to the JSON file
+            with open(self.file_path, 'w') as file:
+                json.dump(list(candle_dict.values()), file, indent=4)
+            
+            logging.info(f"Candle with start_time {new_candle['start_time']} updated or added successfully.")
+            # Return all candles in the format: a list of dictionaries
+            return list(candle_dict.values())
+        except Exception as error:
+            logging.error(f"error {error}")
+            return []
 
 
 
@@ -76,16 +82,18 @@ class CandleAggregator:
                 return  # Skip processing this tick if essential fields are missing
 
             last_price = tick['last_price']
+            with open('last_price_log.txt', 'a') as log_file: log_file.write(f"last_price: {tick['last_price']},{tick['current_datetime']}\n")
+
             tick_time = datetime.datetime.strptime(str(tick['current_datetime']), '%Y-%m-%d %H:%M:%S.%f')
 
             # Round the time to the nearest candle start time
             candle_start_time = tick_time.replace(minute=(tick_time.minute // self.interval_minutes) * self.interval_minutes, second=0, microsecond=0)
 
-            if self.current_candle is None or candle_start_time != self.current_candle['start_time']:
+            if self.current_candle is None or candle_start_time != datetime.datetime.strptime(self.current_candle['start_time'], '%Y-%m-%d %H:%M:%S'):
                 # If this is a new candle, store the previous one and start a new one
                 if self.current_candle is not None:
-                    self.candles.append(self.current_candle)
-                    self.save_candles(self.current_candle)  # Save candles after every interval
+                    self.candles= self.save_candles(self.current_candle)
+                    #self.save_candles(self.current_candle)  # Save candles after every interval
 
                 # Start a new candle
                 self.current_candle = {
@@ -103,6 +111,11 @@ class CandleAggregator:
                 self.current_candle['close'] = last_price
                 self.current_candle['volume'] += tick['last_traded_quantity']
 
+                if self.current_candle is not None:
+                    # Save the updated candle
+                    self.candles = self.save_candles(self.current_candle)
+                    logging.debug(f"Candle updated and saved: {self.current_candle}")  # Log updated and saved candle
+
         except KeyError as e:
             logging.error(f"KeyError: Missing expected key {e} in tick: {tick}")
         except ValueError as e:
@@ -113,67 +126,111 @@ class CandleAggregator:
 
     def check_strategy(self, instrument_token, percentage):
         """ Check the strategy based on the previous two candles and the percentage for buy/sell signals. """
-        if len(self.candles) < 2:
-            return None  # Not enough candles to make a decision
+        
+        # Open the log file in append mode
+        with open(f'strategy_{instrument_token}_log.txt', 'a') as log_file:
+            
+            # Log initial info
+            print(f"Checking strategy for instrument_token: {instrument_token}, percentage: {percentage}", file=log_file)
 
-        prev_candle_1 = self.candles[-1]  # Most recent completed candle
-        prev_candle_2 = self.candles[-2]  # The candle before the most recent one
+            # Check if there are enough candles
+            if len(self.candles) < 3:
+                print(f"Not enough candles. Candles count: {len(self.candles)}", file=log_file)
+                return None  # Not enough candles to make a decision
 
-        # Calculate the high and low for the strategy
-        max_high = max(prev_candle_1['high'], prev_candle_2['high'])
-        min_low = min(prev_candle_1['low'], prev_candle_2['low'])
+            # Get previous two candles
+            prev_candle_1 = self.candles[-2]  # Most recent completed candle
+            prev_candle_2 = self.candles[-3]  # The candle before the most recent one
 
-        # Calculate x_value_higher and x_value_lower using the user-defined percentage
-        self.x_value_higher = math.ceil(max_high + (percentage / 100 * max_high))
-        self.x_value_lower = math.floor(min_low - (percentage / 100 * min_low))
+            print(f"Previous Candle 1: {prev_candle_1}, Previous Candle 2: {prev_candle_2}", file=log_file)
 
-        # Get the current candle's high and low values
-        current_high = self.current_candle['high']
-        current_low = self.current_candle['low']
+            # Calculate the high and low for the strategy
+            max_high = max(prev_candle_1['high'], prev_candle_2['high'])
+            min_low = min(prev_candle_1['low'], prev_candle_2['low'])
 
-        # Initialize response data
-        response = {}
+            print(f"max_high: {max_high}, min_low: {min_low}", file=log_file)
 
-        # Check for Buy or Sell signals and calculate stop loss
-        if current_high > self.x_value_higher:
-            stop_loss = self.calculate_stop_loss("Buy", percentage)
-            response = {
-                "instrument_token": instrument_token,
-                "order_type": "Buy",
-                "stop_loss": stop_loss
-            }
-        elif current_low < self.x_value_lower:
-            stop_loss = self.calculate_stop_loss("Sell", percentage)
-            response = {
-                "instrument_token": instrument_token,
-                "order_type": "Sell",
-                "stop_loss": stop_loss
-            }
+            # Calculate x_value_higher and x_value_lower using the user-defined percentage
+            self.x_value_higher = math.ceil(max_high + ((percentage / 100) * max_high))
+            self.x_value_lower = math.floor(min_low - ((percentage / 100) * min_low))
 
-        return response
+            print(f"x_value_higher: {self.x_value_higher}, x_value_lower: {self.x_value_lower}", file=log_file)
+
+            # Get the current candle's high and low values
+            current_high = self.current_candle['high']
+            current_low = self.current_candle['low']
+
+            print(f"Current Candle High: {current_high}, Current Candle Low: {current_low}", file=log_file)
+
+            # Initialize response data
+            response = {}
+
+            # Check for Buy or Sell signals and calculate stop loss
+            if current_high > self.x_value_higher:
+                stop_loss = self.calculate_stop_loss("Buy", percentage)
+                response = {
+                    "instrument_token": instrument_token,
+                    "order_type": "Buy",
+                    "stop_loss": stop_loss
+                }
+                print(f"Buy signal generated. Stop Loss: {stop_loss}", file=log_file)
+            elif current_low < self.x_value_lower:
+                stop_loss = self.calculate_stop_loss("Sell", percentage)
+                response = {
+                    "instrument_token": instrument_token,
+                    "order_type": "Sell",
+                    "stop_loss": stop_loss
+                }
+                print(f"Sell signal generated. Stop Loss: {stop_loss}", file=log_file)
+            else:
+                print(f"No signals generated. Conditions not met.", file=log_file)
+
+            print(f"Response: {response}", file=log_file)
+
+            return response
 
     def calculate_stop_loss(self, order_type, percentage):
         """ Calculate the stop loss for the current order based on previous candles. """
-        prev_candle_1 = self.candles[-1]
-        prev_candle_2 = self.candles[-2]
 
-        # Determine floor and ceiling values from previous candles
-        floor_value = min(prev_candle_1['low'], prev_candle_2['low'])  # Minimum low for Buy
-        ceil_value = max(prev_candle_1['high'], prev_candle_2['high'])  # Maximum high for Sell
+        # Open the log file in append mode
+        with open('stop_loss_log.txt', 'a') as log_file:
+            
+            # Print that stop loss calculation has started
+            print(f"Calculating stop loss for order_type: {order_type} with percentage: {percentage}", file=log_file)
 
-        # Calculate stop loss based on the order type
-        if order_type == "Buy":
-            stop_loss = math.floor(floor_value - (percentage / 100 * floor_value))
-        elif order_type == "Sell":
-            stop_loss = math.ceil(ceil_value + (percentage / 100 * ceil_value))
-        else:
-            stop_loss = None
+            # Get the previous two candles
+            prev_candle_1 = self.candles[-2]
+            prev_candle_2 = self.candles[-3]
 
-        return stop_loss
+            # Print previous candles information
+            print(f"Previous Candle 1: {prev_candle_1}, Previous Candle 2: {prev_candle_2}", file=log_file)
+
+            # Determine floor and ceiling values from previous candles
+            floor_value = min(prev_candle_1['low'], prev_candle_2['low'])  # Minimum low for Buy
+            ceil_value = max(prev_candle_1['high'], prev_candle_2['high'])  # Maximum high for Sell
+
+            # Print floor and ceiling values
+            print(f"Floor Value: {floor_value}, Ceiling Value: {ceil_value}", file=log_file)
+
+            # Calculate stop loss based on the order type
+            if order_type == "Buy":
+                stop_loss = math.floor(floor_value - (percentage / 100 * floor_value))
+                print(f"Calculated Buy Stop Loss: {stop_loss}", file=log_file)
+            elif order_type == "Sell":
+                stop_loss = math.ceil(ceil_value + (percentage / 100 * ceil_value))
+                print(f"Calculated Sell Stop Loss: {stop_loss}", file=log_file)
+            else:
+                stop_loss = None
+                print(f"Unknown order type: {order_type}. Stop loss set to None.", file=log_file)
+
+            # Return the calculated stop loss
+            return stop_loss
+
 
     def place_order(self, kite, instrument_token, order_type, quantity, stop_loss, price=None):
         try:
             # Check for existing orders
+            order_id = None
             existing_orders = kite.orders()
             for order in existing_orders:
                 if order['tradingsymbol'] == instrument_token and order['status'] in ['OPEN', 'REOPEN']:
@@ -210,7 +267,7 @@ class CandleAggregator:
                 # Update the current order type and stop loss
                 self.current_order_type = 'Sell'
                 self.current_stop_loss = stop_loss
-
+            print("place order",instrument_token, order_type, quantity, stop_loss, price)
             return order_id
 
         except Exception as e:
@@ -260,11 +317,11 @@ class CandleAggregator:
 
     def update_trailing_stop_loss(self, kite, percentage):
         """ Update trailing stop loss for open orders based on the latest candle values. """
-        if len(self.candles) < 2:
+        if len(self.candles) < 3:
             return  # Not enough candles to calculate trailing stop loss
 
-        prev_candle_1 = self.candles[-1]
-        prev_candle_2 = self.candles[-2]
+        prev_candle_1 = self.candles[-2]
+        prev_candle_2 = self.candles[-3]
 
         x_value_higher = max(prev_candle_1['high'], prev_candle_2['high'])
         x_value_lower = min(prev_candle_1['low'], prev_candle_2['low'])
@@ -350,7 +407,7 @@ class WebSocketHandler:
         """ Close existing connection and attempt reconnection. """
         try:
             logging.info("Attempting to reconnect WebSocket...")
-            #self.kite_ticker.close()  # Close the existing connection
+            self.kite_ticker.close()  # Close the existing connection
             self.kite_ticker.connect(threaded=True)  # Reconnect
         except Exception as e:
             logging.error(f"Error while reconnecting WebSocket: {e}")
@@ -359,10 +416,18 @@ class WebSocketHandler:
         # Process each tick and store candles
         try:
             logging.info(f"Received ticks: {ticks}")
-            print(f"datetime:{datetime.datetime.now()}Received ticks: {ticks}", file=open('ticks.txt', 'a'))
+            print(f"datetime:{datetime.datetime.now()} Received ticks: {ticks}", file=open('ticks.txt', 'a'))
+
+            # Check if the current time is before 9 AM
+            if  datetime.datetime.now().hour < 9:
+                # Continue if the time is before 9 AM
+                return None
+
             for tick in ticks:
                 try:
                     instrument_token = tick['instrument_token']
+                    logging.info(f"Processing tick for instrument_token: {instrument_token}")
+                    logging.debug(f"Tick data: {tick}")
 
                     # Get instrument-specific data
                     instrument_data = next((x for x in self.instruments if int(x['instrument_token']) == instrument_token), None)
@@ -370,6 +435,7 @@ class WebSocketHandler:
                         logging.error(f"Instrument data not found for token: {instrument_token}")
                         continue
 
+                    logging.info(f"Instrument data found for token: {instrument_token}, Data: {instrument_data}")
                     lot_size = int(instrument_data['lot_size'])
                     percentage = float(instrument_data['trade_calculation_percentage'])
                     tick['current_datetime'] = datetime.datetime.now()
@@ -380,19 +446,27 @@ class WebSocketHandler:
                         logging.error(f"Candle aggregator not found for token: {instrument_token}")
                         continue
 
+                    logging.info(f"Candle aggregator found for token: {instrument_token}")
                     candle_aggregator.process_tick(tick)
+
+                    # Log the current candle and updated tick info
+                    logging.debug(f"Updated tick processed: {tick}")
+                    logging.debug(f"Current candle: {candle_aggregator.current_candle}")
 
                     # Update trailing stop loss based on the latest tick
                     new_stop_loss = candle_aggregator.update_trailing_stop_loss(self.kite, percentage)
+                    logging.info(f"Updated trailing stop loss for token {instrument_token}: {new_stop_loss}")
 
                     # Check if the current price hits the stored stop loss
                     current_price = candle_aggregator.current_candle['close']
+                    logging.info(f"Current price for token {instrument_token}: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
+
                     if (candle_aggregator.order_active and
                             ((candle_aggregator.order_type == 'Buy' and current_price <= candle_aggregator.current_stop_loss) or
                             (candle_aggregator.order_type == 'Sell' and current_price >= candle_aggregator.current_stop_loss))):
                         
                         # Stop-loss hit, handle reverse order
-                        logging.info(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
+                        logging.warning(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
                         candle_aggregator.handle_reverse_order(
                             instrument_token, 
                             {'order_type': candle_aggregator.order_type, 'stop_loss': candle_aggregator.current_stop_loss}, 
@@ -402,10 +476,14 @@ class WebSocketHandler:
 
                         # Mark order as inactive to prevent new orders until a fresh signal
                         candle_aggregator.order_active = False  
+                        logging.info(f"Order marked inactive for token {instrument_token} after stop-loss hit.")
 
                     # Check strategy based on the candle data and the specific percentage
                     strategy_response = candle_aggregator.check_strategy(instrument_token, percentage)
+                    logging.debug(f"Strategy response for token {instrument_token}: {strategy_response}")
+
                     if strategy_response and not candle_aggregator.order_active:
+                        logging.info(f"Placing order for token {instrument_token} based on strategy.")
                         # Place order with lot size and stop loss from strategy
                         order_id = candle_aggregator.place_order(
                             self.kite,
@@ -414,8 +492,9 @@ class WebSocketHandler:
                             lot_size,  # Quantity based on the lot size
                             strategy_response['stop_loss']
                         )
+
                         if order_id:
-                            logging.info(f"Order placed: {order_id} for {strategy_response['order_type']} {instrument_token}")
+                            logging.info(f"Order placed successfully: {order_id} for {strategy_response['order_type']} {instrument_token}")
 
                             # Mark the order as active and store the current stop loss and order type
                             candle_aggregator.order_active = True
@@ -424,14 +503,21 @@ class WebSocketHandler:
 
                             # Update trailing stop loss immediately after placing the order
                             candle_aggregator.update_trailing_stop_loss(self.kite, percentage)
+                            logging.info(f"Trailing stop loss updated after placing order for {instrument_token}.")
+                        else:
+                            logging.error(f"Failed to place order for token {instrument_token}. Strategy response: {strategy_response}")
 
                 except KeyError as ke:
                     logging.error(f"KeyError processing tick for token {tick.get('instrument_token', 'Unknown')}: {ke}")
+                    logging.debug(f"Tick data at KeyError: {tick}")
                 except Exception as e:
                     logging.error(f"Error processing tick for token {tick.get('instrument_token', 'Unknown')}: {e}")
+                    logging.debug(f"Exception details: {str(e)}. Tick data: {tick}")
 
         except Exception as error:
             logging.error(f"Error in on_ticks: {error}")
+            logging.debug(f"Exception details: {str(error)}. Ticks: {ticks}")
+
 
 
 
