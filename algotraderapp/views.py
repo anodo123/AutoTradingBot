@@ -79,7 +79,9 @@ def access_web_socket(request):
             with ws_lock:
                 # Check if WebSocket handler is already running
                 if ws_handler is None:
+                    save_json_to_mongodb(directory=".")
                     instrument_details = view_all_added_trading_instrument()
+
                     ws_handler = run_script.WebSocketHandler(kite, instrument_details)
                     threading.Thread(target=ws_handler.run_websocket).start()
 
@@ -92,7 +94,7 @@ def access_web_socket(request):
 @api_view(['POST'])
 def download_all_instruments(request):
     try:
-            # Fetch all instruments
+        # Fetch all instruments
         instruments = kite.instruments()
 
         # Convert the instruments list to a DataFrame
@@ -250,3 +252,48 @@ def view_all_added_trading_instrument():
         return list(collection.find({},{"_id":0}))
     except Exception as error:
         return []
+    
+
+
+def save_json_to_mongodb(directory="."):
+    try:
+        client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}/")
+        database = client['CandleData']  # Access the database
+        collection = database['tradeconfiguration']
+        for filename in os.listdir(directory):
+            # Check if the file is a JSON file
+            if filename.endswith("_candles.json"):
+                # Construct the file path
+                file_path = os.path.join(directory, filename)
+                
+                try:
+                    # Load the JSON data from the file
+                    with open(file_path, 'r') as file:
+                        data = json.load(file)
+                    
+                    # Get the date from the first record in the JSON file
+                    if data:
+                        start_date = data[0]["start_time"].split(" ")[0]  # Extract date part only
+                        
+                        # Format collection name with the extracted date
+                        collection_name = start_date.replace('-', '')  # Convert to YYYYMMDD
+                        collection_name  = filename.replace("_candles.json",'_') + start_date.replace('-', '_')
+                        collection = database[collection_name]
+                        # Insert the data into the specific collection
+                        collection.insert_many(data)
+                        print(f"Data from {filename} inserted into MongoDB collection '{collection_name}'.")
+                    
+                    # Delete the JSON file after successful insertion
+                    os.remove(file_path)
+                    print(f"File {filename} deleted after insertion.")
+                
+                except Exception as e:
+                    print(f"Error processing file {filename}: {e}")
+            elif filename.endswith(".txt"):
+                file_path = os.path.join(directory, filename)
+                # Delete the JSON file after successful insertion
+                os.remove(file_path)
+                print(f"File {filename} deleted txt file")
+
+    except Exception as error:
+        print("saving json data",error)
