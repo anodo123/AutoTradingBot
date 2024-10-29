@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 class CandleAggregator:
-    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=15 ,file_path='15_minute_candles.json'):
+    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=15 ,file_path='minute_candles.json'):
         self.file_path = str(instrument_token)+'_'+str(interval_minutes) + '_' + file_path
         self.instrument_token = instrument_token  # Add the instrument token
         self.tradingsymbol = tradingsymbol  # Add the instrument token
@@ -230,7 +230,7 @@ class CandleAggregator:
             return stop_loss
 
 
-    def place_single_order(self,kite, instrument_token, trading_symbol, exchange, exit_trades_threshold_points, order_type, quantity, stop_loss, price=None):
+    def place_single_order(self,kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, order_type, quantity, stop_loss, price=None):
         log_file = 'order_placement.log'
         with open(log_file, 'a') as f:  # Open log file in append mode
             try:
@@ -547,7 +547,8 @@ class WebSocketHandler:
         try:
             logging.info("Attempting to reconnect WebSocket...")
             self.kite_ticker.close()  # Close the existing connection
-            self.kite_ticker.connect(threaded=True)  # Reconnect
+            time.sleep(10)
+            self.kite_ticker.connect()  # Reconnect
         except Exception as e:
             logging.error(f"Error while reconnecting WebSocket: {e}")
 
@@ -580,9 +581,9 @@ class WebSocketHandler:
                     logging.info(f"Instrument data found for token: {instrument_token}, Data: {instrument_data}")
                     lot_size = int(instrument_data['lot_size'])
                     percentage = float(instrument_data['trade_calculation_percentage'])
-                    trading_symbol = instrument_data['instrument_details']['tradingsymbol'],
-                    exchange = instrument_data['instrument_details']['exchange'],
-                    exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'],)
+                    trading_symbol = instrument_data['instrument_details']['tradingsymbol']
+                    exchange = instrument_data['instrument_details']['exchange']
+                    exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'])
 
                     tick['current_datetime'] = datetime.datetime.now()
 
@@ -614,13 +615,13 @@ class WebSocketHandler:
                     candle_aggregator.process_tick(tick)
 
                     #Check the closing point hit  
-                    if candle_aggregator.close_trade_for_the_day:
-                        continue
+                    # if candle_aggregator.close_trade_for_the_day:
+                    #     continue
 
-                    if exchange in ['NSE','BSE'] and current_datetime.hour>=15:
-                        continue
-                    elif current_datetime.hour>=23:
-                        continue
+                    # if exchange in ['NSE','BSE'] and current_datetime.hour>=15:
+                    #     continue
+                    # elif current_datetime.hour>=23:
+                    #     continue
 
                     # Log the current candle and updated tick info
                     logging.debug(f"Updated tick processed: {tick}")
@@ -693,15 +694,16 @@ class WebSocketHandler:
                 except KeyError as ke:
                     logging.error(f"KeyError processing tick for token {tick.get('instrument_token', 'Unknown')}: {ke}")
                     logging.debug(f"Tick data at KeyError: {tick}")
+                    return None
                 except Exception as e:
                     logging.error(f"Error processing tick for token {tick.get('instrument_token', 'Unknown')}: {e}")
                     logging.debug(f"Exception details: {str(e)}. Tick data: {tick}")
+                    return None
 
         except Exception as error:
             logging.error(f"Error in on_ticks: {error}")
             logging.debug(f"Exception details: {str(error)}. Ticks: {ticks}")
-
-
+            return None
 
 
 
