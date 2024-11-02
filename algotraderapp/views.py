@@ -79,13 +79,13 @@ def access_web_socket(request):
             with ws_lock:
                 # Check if WebSocket handler is already running
                 if ws_handler is None:
-                    #save_json_to_mongodb(directory=".")
+                    save_json_to_mongodb(directory=".")
                     instrument_details = view_all_added_trading_instrument()
-                    existing_orders = kite.orders()
-                    for order in existing_orders:
-                        print(order)
-                    # ws_handler = run_script.WebSocketHandler(kite, instrument_details)
-                    # threading.Thread(target=ws_handler.run_websocket).start()
+                    # existing_orders = kite.orders()
+                    # for order in existing_orders:
+                    #     print(order)
+                    ws_handler = run_script.WebSocketHandler(kite, instrument_details)
+                    threading.Thread(target=ws_handler.run_websocket).start()
 
             return JsonResponse({"access_token": access_token})
 
