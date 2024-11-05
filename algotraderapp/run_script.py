@@ -50,6 +50,13 @@ class CandleAggregator:
         else:
             self.candles = []
 
+    def _reset_position(self):
+        """Reset the open position attributes."""
+        self.open_position = False
+        self.open_price = None
+        self.open_quantity = 0
+        self.current_order_type = None
+
     def save_candles(self, new_candle):
         try:
             # Load existing candles from the file
@@ -233,6 +240,7 @@ class CandleAggregator:
 
 
     def place_single_order(self,kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, order_type, quantity, stop_loss, price=None,percentage = 0.00):
+        return "123"
         log_file = 'order_placement.log'
         with open(log_file, 'a') as f:  # Open log file in append mode
             try:
@@ -416,8 +424,8 @@ class CandleAggregator:
             logging.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
             
             # Assign the daily profit/loss to the profit threshold points
-            #self.profit_threshold_points = daily_profit_loss_per_share
-            self.profit_threshold_points = 0 #assigned to zero for testing
+            self.profit_threshold_points = daily_profit_loss_per_share
+            #self.profit_threshold_points = 0 #assigned to zero for testing
             logging.info(f"Updated profit threshold points: {self.profit_threshold_points}")
 
             # Optional console output
@@ -427,87 +435,104 @@ class CandleAggregator:
             return daily_profit_loss_per_share
         except Exception as error:
             logging.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
-            return None
+            return 0
     
     async def calculate_daily_profit_loss(self, sorted_orders):
         """
         Calculate daily profit or loss based on completed buy and sell orders in sequence,
         and calculate average profit/loss points per share.
         """
-        daily_profit_loss = 0
-        total_quantity_traded = 0  # To track total quantity traded for calculating P/L per share
-        self.open_position = False
-        self.open_price = None
-        self.open_quantity = 0
-        self.current_order_type = None
+        try:
+            # Set up logging with a FileHandler
+            logger = logging.getLogger("calculate_daily_profit_loss")
+            logger.setLevel(logging.INFO)
 
-        for order in sorted_orders:
-            quantity = order['quantity']
-            avg_price = order['average_price']
-            transaction_type = order['transaction_type']
+            # Avoid duplicate handlers
+            if not logger.handlers:
+                file_handler = logging.FileHandler("calculate_daily_profit_loss.log")
+                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
 
-            if transaction_type == 'BUY':
-                if not self.open_position:
-                    # Open a new Buy position
-                    self.open_price = avg_price
-                    self.open_quantity = quantity
-                    self.current_order_type = "Buy"
-                    self.open_position = True
-                    logging.info(f"New Buy position: Price {avg_price}, Quantity {quantity}")
+            daily_profit_loss = 0
+            total_quantity_traded = 0  # To track total quantity traded for calculating P/L per share
+            self.open_position = False
+            self.open_price = None
+            self.open_quantity = 0
+            self.current_order_type = None
 
-                elif self.current_order_type == "Sell":
-                    if self.open_quantity == quantity:
-                        # Fully close Sell position
-                        profit_or_loss = (self.open_price - avg_price) * quantity
-                        daily_profit_loss += profit_or_loss
-                        total_quantity_traded += quantity  # Track traded quantity for P/L per share
-                        logging.info(f"Closed Sell position with Buy: Open Price {self.open_price}, Close Price {avg_price}, "
-                                     f"Quantity: {quantity}, Profit/Loss: {profit_or_loss}")
-                        self._reset_position()
-                    elif quantity < self.open_quantity:
-                        # Partially close Sell position
-                        profit_or_loss = (self.open_price - avg_price) * quantity
-                        daily_profit_loss += profit_or_loss
-                        total_quantity_traded += quantity
-                        self.open_quantity -= quantity
-                        logging.info(f"Partially closed Sell position with Buy: Open Price {self.open_price}, Close Price {avg_price}, "
-                                     f"Quantity: {quantity}, Remaining Quantity: {self.open_quantity}, Profit/Loss: {profit_or_loss}")
-                    else:
-                        logging.warning("Buy quantity exceeds remaining Sell quantity. Possible mismatched order.")
+            for order in sorted_orders:
+                quantity = order['quantity']
+                avg_price = order['average_price']
+                transaction_type = order['transaction_type']
 
-            elif transaction_type == 'SELL':
-                if not self.open_position:
-                    # Open a new Sell position
-                    self.open_price = avg_price
-                    self.open_quantity = quantity
-                    self.current_order_type = "Sell"
-                    self.open_position = True
-                    logging.info(f"New Sell position: Price {avg_price}, Quantity {quantity}")
+                if transaction_type == 'BUY':
+                    if not self.open_position:
+                        # Open a new Buy position
+                        self.open_price = avg_price
+                        self.open_quantity = quantity
+                        self.current_order_type = "Buy"
+                        self.open_position = True
+                        #logging.info(f"New Buy position: Price {avg_price}, Quantity {quantity}")
 
-                elif self.current_order_type == "Buy":
-                    if self.open_quantity == quantity:
-                        # Fully close Buy position
-                        profit_or_loss = (avg_price - self.open_price) * quantity
-                        daily_profit_loss += profit_or_loss
-                        total_quantity_traded += quantity
-                        logging.info(f"Closed Buy position with Sell: Open Price {self.open_price}, Close Price {avg_price}, "
-                                     f"Quantity: {quantity}, Profit/Loss: {profit_or_loss}")
-                        self._reset_position()
-                    elif quantity < self.open_quantity:
-                        # Partially close Buy position
-                        profit_or_loss = (avg_price - self.open_price) * quantity
-                        daily_profit_loss += profit_or_loss
-                        total_quantity_traded += quantity
-                        self.open_quantity -= quantity
-                        logging.info(f"Partially closed Buy position with Sell: Open Price {self.open_price}, Close Price {avg_price}, "
-                                     f"Quantity: {quantity}, Remaining Quantity: {self.open_quantity}, Profit/Loss: {profit_or_loss}")
-                    else:
-                        logging.warning("Sell quantity exceeds remaining Buy quantity. Possible mismatched order.")
+                    elif self.current_order_type == "Sell":
+                        if self.open_quantity == quantity:
+                            # Fully close Sell position
+                            profit_or_loss = (self.open_price - avg_price)
+                            daily_profit_loss += profit_or_loss
+                            total_quantity_traded += quantity  # Track traded quantity for P/L per share
+                            #logging.info(f"Closed Sell position with Buy: Open Price {self.open_price}, Close Price {avg_price}, "
+                            #            f"Quantity: {quantity}, Profit/Loss: {profit_or_loss}")
+                            self._reset_position()
+                        elif quantity < self.open_quantity:
+                            # Partially close Sell position
+                            profit_or_loss = (self.open_price - avg_price)
+                            daily_profit_loss += profit_or_loss
+                            total_quantity_traded += quantity
+                            self.open_quantity -= quantity
+                            #logging.info(f"Partially closed Sell position with Buy: Open Price {self.open_price}, Close Price {avg_price}, "
+                            #            f"Quantity: {quantity}, Remaining Quantity: {self.open_quantity}, Profit/Loss: {profit_or_loss}")
+                        else:
+                            pass
+                            #logging.warning("Buy quantity exceeds remaining Sell quantity. Possible mismatched order.")
 
-        # Calculate profit or loss points per share
-        profit_or_loss_per_share = daily_profit_loss / total_quantity_traded if total_quantity_traded > 0 else 0
-        logging.info(f"Total Profit/Loss Points per Share: {profit_or_loss_per_share}")
-        return profit_or_loss_per_share
+                elif transaction_type == 'SELL':
+                    if not self.open_position:
+                        # Open a new Sell position
+                        self.open_price = avg_price
+                        self.open_quantity = quantity
+                        self.current_order_type = "Sell"
+                        self.open_position = True
+                        #logging.info(f"New Sell position: Price {avg_price}, Quantity {quantity}")
+
+                    elif self.current_order_type == "Buy":
+                        if self.open_quantity == quantity:
+                            # Fully close Buy position
+                            profit_or_loss = (avg_price - self.open_price)
+                            daily_profit_loss += profit_or_loss
+                            total_quantity_traded += quantity
+                            #logging.info(f"Closed Buy position with Sell: Open Price {self.open_price}, Close Price {avg_price}, "
+                            #            f"Quantity: {quantity}, Profit/Loss: {profit_or_loss}")
+                            self._reset_position()
+                        elif quantity < self.open_quantity:
+                            # Partially close Buy position
+                            profit_or_loss = (avg_price - self.open_price)
+                            daily_profit_loss += profit_or_loss
+                            total_quantity_traded += quantity
+                            self.open_quantity -= quantity
+                            #logging.info(f"Partially closed Buy position with Sell: Open Price {self.open_price}, Close Price {avg_price}, "
+                            #            f"Quantity: {quantity}, Remaining Quantity: {self.open_quantity}, Profit/Loss: {profit_or_loss}")
+                        else:
+                            pass
+                            #logging.warning("Sell quantity exceeds remaining Buy quantity. Possible mismatched order.")
+
+            # Calculate profit or loss points per share
+            profit_or_loss_per_share = daily_profit_loss if total_quantity_traded > 0 else 0
+            logging.info(f"Total Profit/Loss Points per Share: {profit_or_loss_per_share}")
+            return profit_or_loss_per_share
+        except Exception as error:
+            logging.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
+            return 0
 
 
 
@@ -527,7 +552,7 @@ class CandleAggregator:
 
             # Check for minimum candles
             if len(self.candles) < 3:
-                logger.info("Insufficient candle data (less than 3 candles). Exiting function.")
+                #logger.info("Insufficient candle data (less than 3 candles). Exiting function.")
                 return
 
             prev_candle_1 = self.candles[-2]
@@ -552,7 +577,7 @@ class CandleAggregator:
             if order_type == "Buy":
                 new_stop_loss = math.floor(x_value_lower - (percentage / 100 * x_value_lower))
                 if self.current_stop_loss == new_stop_loss:
-                    logger.info("Trailing stop loss for BUY order is unchanged. Exiting function.")
+                    #logger.info("Trailing stop loss for BUY order is unchanged. Exiting function.")
                     return
                 logger.info(f"Updated trailing stop loss for BUY order of {tradingsymbol} to {new_stop_loss}")
                 self.current_stop_loss = new_stop_loss
@@ -560,7 +585,7 @@ class CandleAggregator:
             elif order_type == "Sell":
                 new_stop_loss = math.ceil(x_value_higher + (percentage / 100 * x_value_higher))
                 if self.current_stop_loss == new_stop_loss:
-                    logger.info("Trailing stop loss for SELL order is unchanged. Exiting function.")
+                    #logger.info("Trailing stop loss for SELL order is unchanged. Exiting function.")
                     return
                 logger.info(f"Updated trailing stop loss for SELL order of {tradingsymbol} to {new_stop_loss}")
                 self.current_stop_loss = new_stop_loss
@@ -690,9 +715,8 @@ class WebSocketHandler:
                     percentage = float(instrument_data['trade_calculation_percentage'])
                     trading_symbol = instrument_data['instrument_details']['tradingsymbol']
                     exchange = instrument_data['instrument_details']['exchange']
-                    if exchange in ['NSE','BSE'] and current_datetime.hour>=15:
-                        continue
-                    print("-------------",exchange)
+                    # if exchange in ['NSE','BSE'] and current_datetime.hour>=15:
+                    #     continue
                     exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'])
 
                     tick['current_datetime'] = datetime.datetime.now()
@@ -703,7 +727,19 @@ class WebSocketHandler:
                         logging.error(f"Candle aggregator not found for token: {instrument_token}")
                         continue
 
+                    # Call the async function directly
+                    asyncio.run(candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite))
 
+                    print(" candle_aggregator.close_trade_for_the_day",candle_aggregator.close_trade_for_the_day)
+
+                    if candle_aggregator.close_trade_for_the_day:
+                        logging.info(
+                            f"closed trade for the day for instrument {instrument_token}. "
+                            f"Exit threshold points: {exit_trades_threshold_points}, "
+                            f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
+                        )
+                        print("------------------closed--------------------------------")
+                        continue
                     if not candle_aggregator.close_trade_for_the_day and int(candle_aggregator.profit_threshold_points) and candle_aggregator.profit_threshold_points>=exit_trades_threshold_points:
                         # Log details before setting the close trade flag
                         logging.info(
@@ -718,12 +754,12 @@ class WebSocketHandler:
                             file=open('trade_close_log.txt', 'a')
                         )
                         candle_aggregator.close_trade_for_the_day = True
+                        print(" candle_aggregator.close_trade_for_the_day",candle_aggregator.close_trade_for_the_day)
                         continue
 
                     
                     logging.info(f"Candle aggregator found for token: {instrument_token}")
                     candle_aggregator.process_tick(tick)
-
 
                     # Log the current candle and updated tick info
                     logging.debug(f"Updated tick processed: {tick}")
@@ -735,21 +771,21 @@ class WebSocketHandler:
 
                     # Check if the current price hits the stored stop loss
                     current_price = candle_aggregator.current_candle['close']
-                    logging.info(f"Current price for token {instrument_token}: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
+                    logging.info(f"Current price for token {instrument_token}: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}, Order Type:{candle_aggregator.current_order_type}")
                     if (candle_aggregator.order_active and
-                            ((candle_aggregator.order_type == 'Buy' and candle_aggregator.current_stop_loss and current_price <= candle_aggregator.current_stop_loss) or
-                            (candle_aggregator.order_type == 'Sell' and candle_aggregator.current_stop_loss and current_price >= candle_aggregator.current_stop_loss))):
+                            ((candle_aggregator.current_order_type == 'Buy' and candle_aggregator.current_stop_loss and current_price <= candle_aggregator.current_stop_loss) or
+                            (candle_aggregator.current_order_type == 'Sell' and candle_aggregator.current_stop_loss and current_price >= candle_aggregator.current_stop_loss))):
                         
                         # Stop-loss hit, handle reverse order
                         logging.warning(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
-                        print(f"{datetime.datetime.now()} Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}", file=open("reverse_logic entered.log", "a"))
+                        print(f"{datetime.datetime.now()} Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss},Order Type:{candle_aggregator.current_order_type}", file=open("reverse_logic entered.log", "a"))
                         candle_aggregator.handle_reverse_order(
                             self.kite,
                             instrument_token, 
                             trading_symbol,
                             exchange,
                             exit_trades_threshold_points,
-                            {'order_type': candle_aggregator.order_type, 'stop_loss': candle_aggregator.current_stop_loss}, 
+                            {'order_type': candle_aggregator.current_order_type, 'stop_loss': candle_aggregator.current_stop_loss}, 
                             lot_size, 
                             percentage
                         )
