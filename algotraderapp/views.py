@@ -244,7 +244,33 @@ def update_trading_instrument(request):
                             "old_data":old_data})
     except Exception as error:
         return JsonResponse({"Some Error Occured":str(error)},status = 500)
-    
+
+
+
+
+# View to update an item
+@api_view(['GET'])
+def callback(request):
+    try:
+        request_token = request.GET['request_token']
+        print(request_token)
+        # Assuming you have initialized KiteConnect instance with api_key
+        # Generate session using the request token and secret
+        data = kite.generate_session(request_token, api_secret=os.getenv("api_secret"))
+        #access_token = os.getenv('access_token')  # Change to access the real token from generated session response
+        access_token = data['access_token']
+
+        if access_token not in [None, ""]:
+            # Temporarily setting an access token (replace with real access_token logic)
+            os.environ['access_token'] =access_token
+            kite.set_access_token(access_token)  # Set access token in KiteConnect
+            return JsonResponse({"access_token": access_token})
+        
+        return JsonResponse({"Some Error Occurred": True}, status=500)
+    except Exception as error:
+        return JsonResponse({"Some Error Occurred": str(error)}, status=500)
+
+
 
 def view_all_added_trading_instrument():
     try:

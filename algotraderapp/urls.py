@@ -12,4 +12,5 @@ urlpatterns = [
     path('access_web_socket',views.access_web_socket,name = 'access_web_socket'),
     path('download_all_instruments',views.download_all_instruments,name = 'download_all_instruments'),
     path('delete_added_trading_instrument',views.delete_added_trading_instrument,name = 'delete_added_trading_instrument'),
+    path('callback',views.callback,name = 'callback'),
 ]

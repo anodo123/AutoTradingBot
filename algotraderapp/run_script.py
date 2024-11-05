@@ -240,7 +240,6 @@ class CandleAggregator:
 
 
     def place_single_order(self,kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, order_type, quantity, stop_loss, price=None,percentage = 0.00):
-        return "123"
         log_file = 'order_placement.log'
         with open(log_file, 'a') as f:  # Open log file in append mode
             try:
@@ -738,7 +737,7 @@ class WebSocketHandler:
                             f"Exit threshold points: {exit_trades_threshold_points}, "
                             f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
                         )
-                        print("------------------closed--------------------------------")
+                        print("------------------closed--------------------------------",instrument_token,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
                         continue
                     if not candle_aggregator.close_trade_for_the_day and int(candle_aggregator.profit_threshold_points) and candle_aggregator.profit_threshold_points>=exit_trades_threshold_points:
                         # Log details before setting the close trade flag
