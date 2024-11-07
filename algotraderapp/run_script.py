@@ -239,7 +239,7 @@ class CandleAggregator:
             return stop_loss
 
 
-    def place_single_order(self,kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, order_type, quantity, stop_loss, price=None,percentage = 0.00):
+    def place_single_order(self,kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, order_type, quantity, stop_loss, price=None,percentage = 0.00,order_mode="Reverse_side"):
         log_file = 'order_placement.log'
         with open(log_file, 'a') as f:  # Open log file in append mode
             try:
@@ -250,7 +250,7 @@ class CandleAggregator:
                 #     f.write(f"Trade closing condition met for {trading_symbol}. No order placed.\n")
                 #     return None
                     
-                f.write(f"Attempting to place order for {trading_symbol} - {order_type} {quantity} stop loss {stop_loss} price {price}.\n")
+                f.write(f"Attempting {order_mode} to place order for {trading_symbol} - {order_type} {quantity} stop loss {stop_loss} price {price}.\n")
                 # If no existing order, proceed to place a new one
                 if order_type == "Buy":
                     order_id = kite.place_order(
@@ -276,18 +276,21 @@ class CandleAggregator:
 
                 if order_id:
                     all_orders = kite.orders()
-                    if all_orders!=[] and all_orders[-1]['status'] == "COMPLETE":
+                    result = not all_orders or all_orders[-1]['status'] != 'REJECTED'
+                    f.write(str(result))
+                    if all_orders==[] or (all_orders!=[] and all_orders[-1]['status'] != 'REJECTED'):
                         self.current_order_type = order_type
                         self.current_stop_loss = stop_loss
                         # Update the current stop loss in the object for the new reverse order
                         self.order_active = True
-                        f.write(f"{order_type} order placed for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
+                        f.write(f"{order_type} {order_mode} order placed for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
                         # Fetch all orders
                     else:
                         self.current_order_type = None
                         self.current_stop_loss = None
                         # Update the current stop loss in the object for the new reverse order
                         self.order_active = False
+                        f.write(f"{order_type} {order_mode} order NOT placed for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
                 
                 f.write(f"Order placed successfully for {trading_symbol}. Order ID: {order_id}\n")
                 return order_id
@@ -360,12 +363,13 @@ class CandleAggregator:
                                                         lot_size,
                                                         stop_loss_price,
                                                         stop_loss_price,  # Using stop-loss price as the price for the reverse order
-                                                        percentage
+                                                        percentage,
+                                                        order_mode="Square OFF"
                                                     )
-            for position in kite.positions()['net']:
-                if position['tradingsymbol'] ==  trading_symbol and position['quantity']==0:
-                    #squaredoffsuccessfully
-                    self.order_active = False
+            # for position in kite.positions()['net']:
+            #     if position['tradingsymbol'] ==  trading_symbol and position['quantity']==0:
+            #         #squaredoffsuccessfully
+            #         self.order_active = False
             # Place the reverse order at the stop-loss price
             reverse_order_id = self.place_single_order(
                                                 kite,
@@ -377,7 +381,8 @@ class CandleAggregator:
                                                 lot_size,
                                                 stop_loss_price,
                                                 stop_loss_price,  # Using stop-loss price as the price for the reverse order
-                                                percentage
+                                                percentage,
+                                                order_mode="Reverse Mode"
                                             )
             
             if reverse_order_id:
@@ -535,7 +540,7 @@ class CandleAggregator:
 
 
 
-    def update_trailing_stop_loss(self, kite, percentage):
+    def update_trailing_stop_loss(self, kite, percentage,tradingsymbol):
         """ Update trailing stop loss for open orders based on the latest candle values. """
         try:
             # Set up logging with a FileHandler
@@ -569,7 +574,6 @@ class CandleAggregator:
             x_value_lower = min(prev_candle_1['low'], prev_candle_2['low'])
 
 
-            tradingsymbol = "SBIN"
             order_type = self.current_order_type
 
             # Calculate new trailing stop loss
@@ -698,9 +702,11 @@ class WebSocketHandler:
                     #     continue
 
                     if current_datetime.hour>=23:
+                        print("Time More than 11 PM, Bot Will not trade further for the day")
                         continue
-                    elif current_datetime.hour < 9:
-                        continue  # Skip the rest of the loop until it's 9 AM or later
+                    if current_datetime.hour < 9:
+                        print("Time less than 9 AM, tradeing not started yet")
+                        continue  # Skip the rest of the loop until it's 9:15 AM or later
 
                     # Get instrument-specific data
                     instrument_data = next((x for x in self.instruments if int(x['instrument_token']) == instrument_token), None)
@@ -714,9 +720,14 @@ class WebSocketHandler:
                     percentage = float(instrument_data['trade_calculation_percentage'])
                     trading_symbol = instrument_data['instrument_details']['tradingsymbol']
                     exchange = instrument_data['instrument_details']['exchange']
-                    # if exchange in ['NSE','BSE'] and current_datetime.hour>=15:
-                    #     continue
                     exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'])
+
+                    if exchange in ['NSE','BSE'] and current_datetime.hour>=15:
+                        print("Time More than 3 PM for equity, Bot Will not trade further for the day")
+                        continue
+
+                    if exchange in ['NSE','BSE'] and (current_datetime.hour < 9 or (current_datetime.hour == 9 and current_datetime.minute < 15)):
+                        continue  # Skip the rest of the loop until it's 9:15 AM or later
 
                     tick['current_datetime'] = datetime.datetime.now()
 
@@ -765,7 +776,7 @@ class WebSocketHandler:
                     logging.debug(f"Current candle: {candle_aggregator.current_candle}")
 
                     # Update trailing stop loss based on the latest tick
-                    new_stop_loss = candle_aggregator.update_trailing_stop_loss(self.kite, percentage)
+                    new_stop_loss = candle_aggregator.update_trailing_stop_loss(self.kite, percentage,trading_symbol)
                     logging.info(f"Updated trailing stop loss for token {instrument_token}: {new_stop_loss}")
 
                     # Check if the current price hits the stored stop loss
@@ -815,7 +826,8 @@ class WebSocketHandler:
                             strategy_response['order_type'],
                             lot_size,  # Quantity based on the lot size
                             strategy_response['stop_loss'],
-                            current_price
+                            current_price,
+                            order_mode="Normal Order"
                         )
                         if order_id:
                             logging.info(f"Order placed successfully: {order_id} for {strategy_response['order_type']} {instrument_token}")
@@ -828,7 +840,7 @@ class WebSocketHandler:
                             candle_aggregator.order_type = strategy_response['order_type']
 
                             # Update trailing stop loss immediately after placing the order
-                            candle_aggregator.update_trailing_stop_loss(self.kite, percentage)
+                            candle_aggregator.update_trailing_stop_loss(self.kite, percentage,trading_symbol)
                             logging.info(f"Trailing stop loss updated after placing order for {instrument_token}.")
                         else:
                             logging.error(f"Failed to place order for token {instrument_token}. Strategy response: {strategy_response}")
