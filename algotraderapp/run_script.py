@@ -861,6 +861,11 @@ class WebSocketHandler:
 
 
 
+    def stop_websocket(self):
+        """ Start the WebSocket and listen for ticks, with connection checks and retries. """
+        # Connect to the WebSocket initially
+        self.kite_ticker.close()
+
     def run_websocket(self):
         """ Start the WebSocket and listen for ticks, with connection checks and retries. """
         # Connect to the WebSocket initially
