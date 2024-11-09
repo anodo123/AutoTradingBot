@@ -642,7 +642,7 @@ class WebSocketHandler:
         self.instrument_tokens = [int(x['instrument_token']) for x in instruments]
         # Create a CandleAggregator instance for each instrument, passing the instrument_token
         self.candle_aggregators = {
-            x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),tradingsymbol=x['instrument_details']['tradingsymbol'],interval_minutes=5) for x in instruments
+            x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),tradingsymbol=x['instrument_details']['tradingsymbol'],interval_minutes=10) for x in instruments
         }
 
         # Define on_ticks method
