@@ -1,8 +1,8 @@
 
 mongo_url = "localhost"
-mongo_port = "27018"
+mongo_port = "27017"
 mongo_username = "admin"
-mongo_password = "password"
+mongo_password = "adminpassword"
 mongo_database = "AlgoBot"
 # Redis configuration
 REDIS_HOST = 'localhost'  # Change as needed
