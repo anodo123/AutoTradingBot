@@ -1,0 +1,10 @@
+Django
+pymongo
+djongo
+kiteconnect
+djangorestframework
+channels
+django-cors-headers
+pandas
+python-dotenv
+redis

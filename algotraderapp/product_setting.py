@@ -1,5 +1,5 @@
 
-mongo_url = "localhost"
+mongo_url = "host.docker.internal"
 mongo_port = "27017"
 mongo_username = "admin"
 mongo_password = "adminpassword"
