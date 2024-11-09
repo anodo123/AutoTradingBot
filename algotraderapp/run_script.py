@@ -12,11 +12,11 @@ import math
 import asyncio
 
 # Initialize Redis client using Django settings
-redis_client = redis.StrictRedis(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    db=REDIS_DB
-)
+# redis_client = redis.StrictRedis(
+#     host=REDIS_HOST,
+#     port=REDIS_PORT,
+#     db=REDIS_DB
+# )
 
 logging.basicConfig(level=logging.DEBUG)
 
