@@ -10,7 +10,7 @@ from .product_setting import REDIS_HOST, REDIS_PORT, REDIS_DB
 import redis
 import math
 import asyncio
-
+import sys
 # Initialize Redis client using Django settings
 # redis_client = redis.StrictRedis(
 #     host=REDIS_HOST,
@@ -290,7 +290,8 @@ class CandleAggregator:
                         self.current_stop_loss = None
                         # Update the current stop loss in the object for the new reverse order
                         self.order_active = False
-                        f.write(f"{order_type} {order_mode} order NOT placed for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
+                        f.write(f"{order_type} {order_mode} order NOT placed REJECTED for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
+                        sys.exit()
                 
                 f.write(f"Order placed successfully for {trading_symbol}. Order ID: {order_id}\n")
                 return order_id
