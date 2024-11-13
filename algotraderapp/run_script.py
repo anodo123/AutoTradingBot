@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 class CandleAggregator:
-    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=15 ,file_path='minute_candles.json'):
+    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=3 ,file_path='minute_candles.json'):
         self.file_path = str(instrument_token)+'_'+str(interval_minutes) + '_' + file_path
         self.instrument_token = instrument_token  # Add the instrument token
         self.tradingsymbol = tradingsymbol  # Add the instrument token
@@ -643,7 +643,7 @@ class WebSocketHandler:
         self.instrument_tokens = [int(x['instrument_token']) for x in instruments]
         # Create a CandleAggregator instance for each instrument, passing the instrument_token
         self.candle_aggregators = {
-            x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),tradingsymbol=x['instrument_details']['tradingsymbol'],interval_minutes=10) for x in instruments
+            x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),tradingsymbol=x['instrument_details']['tradingsymbol'],interval_minutes=3) for x in instruments
         }
 
         # Define on_ticks method
@@ -723,11 +723,11 @@ class WebSocketHandler:
                     exchange = instrument_data['instrument_details']['exchange']
                     exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'])
 
-                    if exchange in ['NSE','BSE'] and current_datetime.hour>=15:
+                    if exchange in ['NFO','NSE','BSE'] and current_datetime.hour>=15:
                         print("Time More than 3 PM for equity, Bot Will not trade further for the day")
                         continue
 
-                    if exchange in ['NSE','BSE'] and (current_datetime.hour < 9 or (current_datetime.hour == 9 and current_datetime.minute < 15)):
+                    if exchange in ['NFO','NSE','BSE'] and (current_datetime.hour < 9 or (current_datetime.hour == 9 and current_datetime.minute < 15)):
                         continue  # Skip the rest of the loop until it's 9:15 AM or later
 
                     tick['current_datetime'] = datetime.datetime.now()
