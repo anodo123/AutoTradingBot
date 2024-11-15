@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 class CandleAggregator:
-    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=5 ,file_path='minute_candles.json'):
+    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=15 ,file_path='minute_candles.json'):
         self.file_path = str(instrument_token)+'_'+str(interval_minutes) + '_' + file_path
         self.instrument_token = instrument_token  # Add the instrument token
         self.tradingsymbol = tradingsymbol  # Add the instrument token
@@ -644,7 +644,7 @@ class WebSocketHandler:
         self.instrument_tokens = [int(x['instrument_token']) for x in instruments]
         # Create a CandleAggregator instance for each instrument, passing the instrument_token
         self.candle_aggregators = {
-            x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),tradingsymbol=x['instrument_details']['tradingsymbol'],interval_minutes=5) for x in instruments
+            x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),tradingsymbol=x['instrument_details']['tradingsymbol'],interval_minutes=int(x['timeframe'])) for x in instruments
         }
 
         # Define on_ticks method
