@@ -11,6 +11,7 @@ import redis
 import math
 import asyncio
 import sys
+from zoneinfo import ZoneInfo
 # Initialize Redis client using Django settings
 # redis_client = redis.StrictRedis(
 #     host=REDIS_HOST,
@@ -620,7 +621,7 @@ class CandleAggregator:
                     f"Profit threshold points: {self.profit_threshold_points}"
                 )
                 print(
-                    f"datetime:{datetime.datetime.now()} - Closing trade for {instrument_token} due to threshold. "
+                    f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {instrument_token} due to threshold. "
                     f"Exit threshold points: {exit_trades_threshold_points}, "
                     f"Profit threshold points: {self.profit_threshold_points}", 
                     file=open('trade_close_log.txt', 'a')
@@ -686,10 +687,10 @@ class WebSocketHandler:
         # Process each tick and store candles
         try:
             logging.info(f"Received ticks: {ticks}")
-            print(f"datetime:{datetime.datetime.now()} Received ticks: {ticks}", file=open('ticks.txt', 'a'))
-            current_datetime = datetime.datetime.now()
+            print(f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} Received ticks: {ticks}", file=open('ticks.txt', 'a'))
+            current_datetime = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
             # Check if the current time is before 9 AM
-            if  datetime.datetime.now().hour < 9:
+            if  datetime.datetime.now(ZoneInfo("Asia/Kolkata")).hour < 9:
                 # Continue if the time is before 9 AM
                 return None
 
@@ -730,7 +731,7 @@ class WebSocketHandler:
                     if exchange in ['NFO','NSE','BSE'] and (current_datetime.hour < 9 or (current_datetime.hour == 9 and current_datetime.minute < 15)):
                         continue  # Skip the rest of the loop until it's 9:15 AM or later
 
-                    tick['current_datetime'] = datetime.datetime.now()
+                    tick['current_datetime'] = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
 
                     # Process the tick using the respective CandleAggregator for the instrument
                     candle_aggregator = self.candle_aggregators.get(str(instrument_token))
@@ -759,7 +760,7 @@ class WebSocketHandler:
                             f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
                         )
                         print(
-                            f"datetime:{datetime.datetime.now()} - Closing trade for {instrument_token} due to threshold. "
+                            f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {instrument_token} due to threshold. "
                             f"Exit threshold points: {exit_trades_threshold_points}, "
                             f"Profit threshold points: {candle_aggregator.profit_threshold_points}", 
                             file=open('trade_close_log.txt', 'a')
@@ -789,7 +790,7 @@ class WebSocketHandler:
                         
                         # Stop-loss hit, handle reverse order
                         logging.warning(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
-                        print(f"{datetime.datetime.now()} Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss},Order Type:{candle_aggregator.current_order_type}", file=open("reverse_logic entered.log", "a"))
+                        print(f"{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss},Order Type:{candle_aggregator.current_order_type}", file=open("reverse_logic entered.log", "a"))
                         candle_aggregator.handle_reverse_order(
                             self.kite,
                             instrument_token, 

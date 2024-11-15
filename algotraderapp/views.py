@@ -18,6 +18,7 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from . import run_script
+from zoneinfo import ZoneInfo
 # Global variable to hold the WebSocket handler
 ws_handler = None
 ws_lock = threading.Lock()
@@ -102,7 +103,7 @@ def download_all_instruments(request):
         # Convert the instruments list to a DataFrame
         instruments_df = pd.DataFrame(instruments)
         # Get the current date and time for the filename
-        current_datetime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        current_datetime = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y%m%d_%H%M%S")
         csv_filename = f'zerodha_instruments_{current_datetime}.csv'
 
         # Create a HttpResponse object with the appropriate CSV headers
@@ -191,7 +192,7 @@ def delete_added_trading_instrument(request):
         old_data = collection.find_one({"instrument_token":instrument_token})
         old_data['old_id'] = str(old_data['_id'])
         old_data['action'] = 'deletion'
-        old_data['timeofaction'] = str(datetime.datetime.now())
+        old_data['timeofaction'] = str(datetime.datetime.now(ZoneInfo("Asia/Kolkata")))
         del old_data['_id']
         tradeconfigurationlog_collection.insert_one(old_data)
         if old_data["instrument_token"]:
@@ -226,7 +227,7 @@ def update_trading_instrument(request):
         old_data = collection.find_one({"instrument_token":instrument_token})
         old_data['old_id'] = str(old_data['_id'])
         old_data['action'] = 'updation'
-        old_data['timeofaction'] = str(datetime.datetime.now())
+        old_data['timeofaction'] = str(datetime.datetime.now(ZoneInfo("Asia/Kolkata")))
         del old_data['_id']
         tradeconfigurationlog_collection.insert_one(old_data)
         if data:
