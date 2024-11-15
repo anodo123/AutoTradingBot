@@ -124,6 +124,7 @@ def add_trading_instrument(request):
         instrument_token = request.POST['instrument_token']
         exit_trades_threshold_points= request.POST['exit_trades_threshold_points']
         trade_calculation_percentage= request.POST['trade_calculation_percentage']
+        timeframe= request.POST['timeframe']
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}")
         database = client[mongo_database]  # Access the database
         collection = database['tradeconfiguration']  # Replace 'mycollection' with your collection name
@@ -144,7 +145,8 @@ def add_trading_instrument(request):
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
-            "instrument_details":instrument_details
+            "timeframe":timeframe,
+            "instrument_details":instrument_details,
         })
         return JsonResponse({
             "lot_size":lot_size,
