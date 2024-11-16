@@ -87,13 +87,31 @@ def access_web_socket(request):
                     instrument_details = view_all_added_trading_instrument()
                     ws_handler = run_script.WebSocketHandler(kite, instrument_details)
                     threading.Thread(target=ws_handler.run_websocket).start()
-
-        return JsonResponse({"access_token": access_token})
-
-        return JsonResponse({"Some Error Occurred": True}, status=500)
-
+                else:
+                    return JsonResponse({"Websocket Already Running": True})            
+            return JsonResponse({"Websocket Started ": True,"access_token": access_token})
+        else:
+            return HttpResponse("Session Not Started, Please Generate Session")
     except Exception as error:
         return JsonResponse({"Some Error Occurred": str(error)}, status=500)
+    
+
+@api_view(['POST'])
+def stop_web_socket(request):
+    global ws_handler
+    try:
+        with ws_lock:
+            if ws_handler is None or not ws_handler.is_running():
+                return JsonResponse({"message": "WebSocket is not running"}, status=400)
+
+            ws_handler.stop_websocket()
+            ws_handler = None  # Clear the handler after stopping
+
+        return JsonResponse({"message": "WebSocket stopped successfully"})
+    except Exception as error:
+        return JsonResponse({"error": "Failed to stop WebSocket", "details": str(error)}, status=500)
+
+
 @api_view(['POST'])
 def download_all_instruments(request):
     try:

@@ -636,6 +636,7 @@ class CandleAggregator:
 # WebSocket Handler Class
 class WebSocketHandler:
     def __init__(self, kite, instruments=[]):
+        self.websocket_running = True
         self.kite = kite
         self.kite_ticker = KiteTicker(kite.api_key, kite.access_token)
         
@@ -660,7 +661,7 @@ class WebSocketHandler:
         self.kite_ticker.subscribe(self.instrument_tokens)
 
     def on_close(self, ws, code, reason):
-        logging.info("WebSocket closed.")
+        logging.info(f"WebSocket closed. {code} with reason {reason}")
     def on_error(self, ws, code, reason):
         logging.error(f"WebSocket encountered an error: Code {code}, Reason: {reason}.")
         # Handle the error and attempt to reconnect if necessary
@@ -866,7 +867,14 @@ class WebSocketHandler:
     def stop_websocket(self):
         """ Start the WebSocket and listen for ticks, with connection checks and retries. """
         # Connect to the WebSocket initially
-        self.kite_ticker.close()
+        self.websocket_running = False
+        #self.kite_ticker.unsubscribe(self.instrument_tokens)
+        self.kite_ticker.close(1000,"No More Trade Required")
+        #self.kite_ticker.
+    def is_running(self):
+        """ Start the WebSocket and listen for ticks, with connection checks and retries. """
+        # Connect to the WebSocket initially
+        return self.websocket_running
 
     def run_websocket(self):
         """ Start the WebSocket and listen for ticks, with connection checks and retries. """
@@ -877,26 +885,3 @@ class WebSocketHandler:
         backoff_time = 5  # Initial backoff time in seconds
         max_backoff_time = 60  # Maximum backoff time in seconds
         is_reconnecting = False
-
-        # while True:
-        #     try:
-        #         if self.kite_ticker.is_connected():
-        #             logging.info("WebSocket is connected and running.")
-        #             is_reconnecting = False  # Reset reconnection flag
-        #             backoff_time = 5  # Reset backoff time
-        #         else:
-        #             if not is_reconnecting:
-        #                 logging.info("WebSocket is not connected, attempting to reconnect...")
-        #                 is_reconnecting = True
-
-        #                 # Close existing connection and reconnect
-        #                 #self.kite_ticker.close()
-        #                 time.sleep(10)
-        #                 self.kite_ticker.connect(threaded=True)
-
-        #             time.sleep(backoff_time)  # Wait before next reconnection attempt
-        #             backoff_time = min(max_backoff_time, backoff_time * 2)  # Exponential backoff
-        #     except Exception as e:
-        #         logging.error(f"Error handling WebSocket: {e}")
-        #         time.sleep(backoff_time)  # Wait before retrying on error
-        #         backoff_time = min(max_backoff_time, backoff_time * 2)  # Exponential backoff
