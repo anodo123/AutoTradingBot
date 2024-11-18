@@ -412,7 +412,7 @@ class CandleAggregator:
             completed_orders = [
                 order for order in all_orders if order['status'] == 'COMPLETE' and
                 order['transaction_type'] in ['BUY', 'SELL'] and 
-                order['trading_symbol'] == trading_symbol
+                order['tradingsymbol'] == trading_symbol
             ]
             logging.info(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
 
