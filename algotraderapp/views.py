@@ -89,7 +89,7 @@ def access_web_socket(request):
                     threading.Thread(target=ws_handler.run_websocket).start()
                 else:
                     return JsonResponse({"Websocket Already Running": True})            
-            return JsonResponse({"Websocket Started ": True,"access_token": access_token})
+            return JsonResponse({"Websocket Started": True,"access_token": access_token})
         else:
             return HttpResponse("Session Not Started, Please Generate Session")
     except Exception as error:
@@ -339,6 +339,8 @@ def save_json_to_mongodb(directory="."):
                 except Exception as e:
                     print(f"Error processing file {filename}: {e}")
             elif filename.endswith(".txt"):
+                if filename == "requirements.txt":
+                    continue
                 file_path = os.path.join(directory, filename)
                 # Delete the JSON file after successful insertion
                 os.remove(file_path)

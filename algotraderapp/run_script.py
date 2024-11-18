@@ -411,7 +411,8 @@ class CandleAggregator:
             # Filter for completed buy/sell orders
             completed_orders = [
                 order for order in all_orders if order['status'] == 'COMPLETE' and
-                order['transaction_type'] in ['BUY', 'SELL']
+                order['transaction_type'] in ['BUY', 'SELL'] and 
+                order['trading_symbol'] == trading_symbol
             ]
             logging.info(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
 
@@ -420,7 +421,7 @@ class CandleAggregator:
             logging.info("Sorted orders by timestamp.")
 
             # Calculate daily profit or loss based on the sorted orders
-            daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(sorted_orders, current_price)
+            daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
             logging.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
             
             # Assign the daily profit/loss to the profit threshold points
@@ -439,7 +440,7 @@ class CandleAggregator:
             logging.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
             return 0
     
-    async def calculate_total_profit_loss_per_share(self, sorted_orders, current_price):
+    async def calculate_total_profit_loss_per_share(self, sorted_orders, current_price,trading_symbol):
         """
         Calculate total profit or loss per share, including realized and unrealized P/L.
         """
