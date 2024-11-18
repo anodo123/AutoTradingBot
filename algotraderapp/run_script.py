@@ -97,7 +97,7 @@ class CandleAggregator:
             last_price = tick['last_price']
             with open('last_price_log.txt', 'a') as log_file: log_file.write(f"last_price: {tick['last_price']},{tick['current_datetime']}\n")
 
-            tick_time = datetime.datetime.strptime(str(tick['current_datetime']), '%Y-%m-%d %H:%M:%S.%f')
+            tick_time = datetime.datetime.strptime(str(tick['current_datetime']), '%Y-%m-%d %H:%M:%S.%f%z')
 
             # Round the time to the nearest candle start time
             candle_start_time = tick_time.replace(minute=(tick_time.minute // self.interval_minutes) * self.interval_minutes, second=0, microsecond=0)
@@ -246,12 +246,11 @@ class CandleAggregator:
             try:
                 # Check for existing orders
                 order_id = None
-                
-                # if should_close_trade(instrument_token, exit_trades_threshold_points):
-                #     f.write(f"Trade closing condition met for {trading_symbol}. No order placed.\n")
-                #     return None
-                    
+
                 f.write(f"Attempting {order_mode} to place order for {trading_symbol} - {order_type} {quantity} stop loss {stop_loss} price {price}.\n")
+                if self.close_trade_for_the_day:
+                    f.write(f" Trade Closed for Attempted {order_mode} for {trading_symbol}")
+                    return 
                 # If no existing order, proceed to place a new one
                 if order_type == "Buy":
                     order_id = kite.place_order(
@@ -330,10 +329,6 @@ class CandleAggregator:
         # Get the latest tick data to compare the stop-loss price
         current_price = self.current_candle['close']
         #reverse_order_logger.debug(f"Current price from candle data: {current_price}")
-        
-        # if self.should_close_trade(instrument_token, exit_trades_threshold_points):
-        #     reverse_order_logger.info(f"Trade closure conditions met for {instrument_token}. Exiting handle_reverse_order.")
-        #     return None
 
         # Check stop-loss condition
         if (self.current_order_type == 'Buy' and stop_loss_price and current_price <= stop_loss_price) or \
@@ -344,8 +339,7 @@ class CandleAggregator:
 
             # Calculate daily profit or loss before reversing the order
             reverse_order_logger.info("Calculating daily profit or loss.")
-            self.fetch_and_calculate_daily_profit_loss(kite)
-
+            self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
             # Stop-loss hit, place reverse order
             reverse_order_type = "Sell" if strategy_response['order_type'] == "Buy" else "Buy"
             reverse_order_logger.info(f"Reverse order type determined as: {reverse_order_type}")
@@ -395,7 +389,7 @@ class CandleAggregator:
             reverse_order_logger.debug("Stop-loss condition not met. No reverse order placed.")
 
     
-    async def fetch_and_calculate_daily_profit_loss(self, kite):
+    async def fetch_and_calculate_daily_profit_loss(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
         """
         Fetch orders from Kite API and calculate daily profit or loss, with extensive logging.
         """
@@ -426,13 +420,15 @@ class CandleAggregator:
             logging.info("Sorted orders by timestamp.")
 
             # Calculate daily profit or loss based on the sorted orders
-            daily_profit_loss_per_share = await self.calculate_daily_profit_loss(sorted_orders)
+            daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(sorted_orders, current_price)
             logging.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
             
             # Assign the daily profit/loss to the profit threshold points
             self.profit_threshold_points = daily_profit_loss_per_share
             #self.profit_threshold_points = 0 #assigned to zero for testing
             logging.info(f"Updated profit threshold points: {self.profit_threshold_points}")
+            if self.profit_threshold_points>=exit_trades_threshold_points:
+                self.should_close_trade(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
 
             # Optional console output
             print(f"Total Profit/Loss for the day: {daily_profit_loss_per_share}")
@@ -443,33 +439,32 @@ class CandleAggregator:
             logging.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
             return 0
     
-    async def calculate_daily_profit_loss(self, sorted_orders):
+    async def calculate_total_profit_loss_per_share(self, sorted_orders, current_price):
         """
-        Calculate daily profit or loss based on completed buy and sell orders in sequence,
-        and calculate average profit/loss points per share.
+        Calculate total profit or loss per share, including realized and unrealized P/L.
         """
         try:
             # Set up logging with a FileHandler
-            logger = logging.getLogger("calculate_daily_profit_loss")
+            logger = logging.getLogger("calculate_total_profit_loss_per_share")
             logger.setLevel(logging.INFO)
 
             # Avoid duplicate handlers
             if not logger.handlers:
-                file_handler = logging.FileHandler("calculate_daily_profit_loss.log")
+                file_handler = logging.FileHandler("calculate_total_profit_loss_per_share.log")
                 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
                 file_handler.setFormatter(formatter)
                 logger.addHandler(file_handler)
 
-            daily_profit_loss = 0
-            total_quantity_traded = 0  # To track total quantity traded for calculating P/L per share
+            realized_profit_loss_per_share = 0  # Realized P/L per share
+            unrealized_profit_loss_per_share = 0  # Unrealized P/L per share
             self.open_position = False
             self.open_price = None
             self.open_quantity = 0
             self.current_order_type = None
 
             for order in sorted_orders:
-                quantity = order['quantity']
                 avg_price = order['average_price']
+                quantity = order['quantity']  # Keeping track for open positions
                 transaction_type = order['transaction_type']
 
                 if transaction_type == 'BUY':
@@ -479,28 +474,17 @@ class CandleAggregator:
                         self.open_quantity = quantity
                         self.current_order_type = "Buy"
                         self.open_position = True
-                        #logging.info(f"New Buy position: Price {avg_price}, Quantity {quantity}")
-
                     elif self.current_order_type == "Sell":
                         if self.open_quantity == quantity:
                             # Fully close Sell position
-                            profit_or_loss = (self.open_price - avg_price)
-                            daily_profit_loss += profit_or_loss
-                            total_quantity_traded += quantity  # Track traded quantity for P/L per share
-                            #logging.info(f"Closed Sell position with Buy: Open Price {self.open_price}, Close Price {avg_price}, "
-                            #            f"Quantity: {quantity}, Profit/Loss: {profit_or_loss}")
+                            realized_profit_loss_per_share += (self.open_price - avg_price)
                             self._reset_position()
                         elif quantity < self.open_quantity:
                             # Partially close Sell position
-                            profit_or_loss = (self.open_price - avg_price)
-                            daily_profit_loss += profit_or_loss
-                            total_quantity_traded += quantity
+                            realized_profit_loss_per_share += (self.open_price - avg_price)
                             self.open_quantity -= quantity
-                            #logging.info(f"Partially closed Sell position with Buy: Open Price {self.open_price}, Close Price {avg_price}, "
-                            #            f"Quantity: {quantity}, Remaining Quantity: {self.open_quantity}, Profit/Loss: {profit_or_loss}")
                         else:
                             pass
-                            #logging.warning("Buy quantity exceeds remaining Sell quantity. Possible mismatched order.")
 
                 elif transaction_type == 'SELL':
                     if not self.open_position:
@@ -509,36 +493,39 @@ class CandleAggregator:
                         self.open_quantity = quantity
                         self.current_order_type = "Sell"
                         self.open_position = True
-                        #logging.info(f"New Sell position: Price {avg_price}, Quantity {quantity}")
-
                     elif self.current_order_type == "Buy":
                         if self.open_quantity == quantity:
                             # Fully close Buy position
-                            profit_or_loss = (avg_price - self.open_price)
-                            daily_profit_loss += profit_or_loss
-                            total_quantity_traded += quantity
-                            #logging.info(f"Closed Buy position with Sell: Open Price {self.open_price}, Close Price {avg_price}, "
-                            #            f"Quantity: {quantity}, Profit/Loss: {profit_or_loss}")
+                            realized_profit_loss_per_share += (avg_price - self.open_price)
                             self._reset_position()
                         elif quantity < self.open_quantity:
                             # Partially close Buy position
-                            profit_or_loss = (avg_price - self.open_price)
-                            daily_profit_loss += profit_or_loss
-                            total_quantity_traded += quantity
+                            realized_profit_loss_per_share += (avg_price - self.open_price)
                             self.open_quantity -= quantity
-                            #logging.info(f"Partially closed Buy position with Sell: Open Price {self.open_price}, Close Price {avg_price}, "
-                            #            f"Quantity: {quantity}, Remaining Quantity: {self.open_quantity}, Profit/Loss: {profit_or_loss}")
                         else:
                             pass
-                            #logging.warning("Sell quantity exceeds remaining Buy quantity. Possible mismatched order.")
 
-            # Calculate profit or loss points per share
-            profit_or_loss_per_share = daily_profit_loss if total_quantity_traded > 0 else 0
-            logging.info(f"Total Profit/Loss Points per Share: {profit_or_loss_per_share}")
-            return profit_or_loss_per_share
+            # Calculate unrealized profit or loss per share for open positions
+            if self.open_position:
+                if self.current_order_type == "Buy":
+                    unrealized_profit_loss_per_share = (current_price - self.open_price)
+                elif self.current_order_type == "Sell":
+                    unrealized_profit_loss_per_share = (self.open_price - current_price)
+
+            # Total profit or loss per share
+            total_profit_loss_per_share = realized_profit_loss_per_share + unrealized_profit_loss_per_share
+
+            logging.info(f"Realized P/L per share: {realized_profit_loss_per_share}")
+            logging.info(f"Unrealized P/L per share: {unrealized_profit_loss_per_share}")
+            logging.info(f"Total P/L per share: {total_profit_loss_per_share}")
+
+            return total_profit_loss_per_share
+
         except Exception as error:
-            logging.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
-            return 0
+            logging.error(f"Error in calculate_total_profit_loss_per_share: {error}", exc_info=True)
+            return 0, 0, 0
+
+
 
 
 
@@ -599,7 +586,7 @@ class CandleAggregator:
             logger.exception(f"Error in update_trailing_stop_loss for {tradingsymbol}: {error}")
 
 
-    def should_close_trade(self, instrument_token, exit_trades_threshold_points):
+    def should_close_trade(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
         try:
             """
             Determine if the trade should be closed based on the exit trades threshold points.
@@ -611,20 +598,47 @@ class CandleAggregator:
             Returns:
                 bool: True if the trade should be closed, False otherwise.
             """
+            # Set up a dedicated logger for this function
+            close_order_logger = logging.getLogger("close_trade_logger")
+            close_order_logger.setLevel(logging.DEBUG)
+
+            # Create a file handler specific for reverse order handling logs
+            file_handler = logging.FileHandler("close_trade_logger.log")
+            file_handler.setLevel(logging.DEBUG)
             if self.close_trade_for_the_day:
                 return True
-            if not self.close_trade_for_the_day and self.profit_threshold_points and self.profit_threshold_points>=exit_trades_threshold_points:
-                # Log details before setting the close trade flag
+            if not self.close_trade_for_the_day and self.profit_threshold_points and self.profit_threshold_points>=exit_trades_threshold_points and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'):            
+                close_order_logger.info(f"Threshold hit for {trading_symbol} at price: {current_price}")
+
+                # Calculate daily profit or loss before reversing the order
+                #self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
+                # Stop-loss hit, place reverse order
+                reverse_order_type = "Sell" if strategy_response['order_type'] == "Buy" else "Buy"
+                close_order_logger.info(f"Reverse order type determined as: {reverse_order_type}")
+                
+                # Place the reverse order at the stop-loss price for square off
+                # Fetch current positions
+                for position in kite.positions()['net']:
+                    if position['tradingsymbol'] ==  trading_symbol and position['quantity']!=0:
+                        #squaringoffopenpositions
+                        reverse_order_id_sq_off = self.place_single_order(
+                                                            kite,
+                                                            instrument_token,
+                                                            trading_symbol,
+                                                            exchange,
+                                                            exit_trades_threshold_points,
+                                                            reverse_order_type,
+                                                            lot_size,
+                                                            current_price,
+                                                            current_price,  # Using stop-loss price as the price for the reverse order
+                                                            percentage,
+                                                            order_mode="Final Square Off"
+                                                        )
                 logging.info(
+                     f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {trading_symbol} due to threshold. "
                     f"Closing trade for the day for instrument {instrument_token}. "
                     f"Exit threshold points: {exit_trades_threshold_points}, "
                     f"Profit threshold points: {self.profit_threshold_points}"
-                )
-                print(
-                    f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {instrument_token} due to threshold. "
-                    f"Exit threshold points: {exit_trades_threshold_points}, "
-                    f"Profit threshold points: {self.profit_threshold_points}", 
-                    file=open('trade_close_log.txt', 'a')
                 )
                 self.close_trade_for_the_day = True
                 return True  # Trade should be closed
@@ -700,9 +714,6 @@ class WebSocketHandler:
                     instrument_token = tick['instrument_token']
                     logging.info(f"Processing tick for instrument_token: {instrument_token}")
                     logging.debug(f"Tick data: {tick}")
-                    #Check the closing point hit  
-                    # if candle_aggregator.close_trade_for_the_day:
-                    #     continue
 
                     if current_datetime.hour>=23:
                         print("Time More than 11 PM, Bot Will not trade further for the day")
@@ -741,34 +752,34 @@ class WebSocketHandler:
                         continue
 
                     # Call the async function directly
-                    asyncio.run(candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite))
+                    #asyncio.run(candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite))
 
-                    print(" candle_aggregator.close_trade_for_the_day",candle_aggregator.close_trade_for_the_day)
+                    print("candle_aggregator.close_trade_for_the_day",candle_aggregator.close_trade_for_the_day)
 
                     if candle_aggregator.close_trade_for_the_day:
                         logging.info(
-                            f"closed trade for the day for instrument {instrument_token}. "
+                            f"closed trade for the day for instrument {trading_symbol}. "
                             f"Exit threshold points: {exit_trades_threshold_points}, "
                             f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
                         )
-                        print("------------------closed--------------------------------",instrument_token,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
+                        print("------------------closed--------------------------------",trading_symbol,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
                         continue
-                    if not candle_aggregator.close_trade_for_the_day and int(candle_aggregator.profit_threshold_points) and candle_aggregator.profit_threshold_points>=exit_trades_threshold_points:
-                        # Log details before setting the close trade flag
-                        logging.info(
-                            f"Closing trade for the day for instrument {instrument_token}. "
-                            f"Exit threshold points: {exit_trades_threshold_points}, "
-                            f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
-                        )
-                        print(
-                            f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {instrument_token} due to threshold. "
-                            f"Exit threshold points: {exit_trades_threshold_points}, "
-                            f"Profit threshold points: {candle_aggregator.profit_threshold_points}", 
-                            file=open('trade_close_log.txt', 'a')
-                        )
-                        candle_aggregator.close_trade_for_the_day = True
-                        print(" candle_aggregator.close_trade_for_the_day",candle_aggregator.close_trade_for_the_day)
-                        continue
+                    # if not candle_aggregator.close_trade_for_the_day and int(candle_aggregator.profit_threshold_points) and candle_aggregator.profit_threshold_points>=exit_trades_threshold_points:
+                    #     # Log details before setting the close trade flag
+                    #     logging.info(
+                    #         f"Closing trade for the day for instrument {instrument_token}. "
+                    #         f"Exit threshold points: {exit_trades_threshold_points}, "
+                    #         f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
+                    #     )
+                    #     print(
+                    #         f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {instrument_token} due to threshold. "
+                    #         f"Exit threshold points: {exit_trades_threshold_points}, "
+                    #         f"Profit threshold points: {candle_aggregator.profit_threshold_points}", 
+                    #         file=open('trade_close_log.txt', 'a')
+                    #     )
+                    #     candle_aggregator.close_trade_for_the_day = True
+                    #     print(" candle_aggregator.close_trade_for_the_day",candle_aggregator.close_trade_for_the_day)
+                    #     continue
 
                     
                     logging.info(f"Candle aggregator found for token: {instrument_token}")
@@ -784,6 +795,8 @@ class WebSocketHandler:
 
                     # Check if the current price hits the stored stop loss
                     current_price = candle_aggregator.current_candle['close']
+                    # Call the async function directly
+                    asyncio.run(candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, {}, lot_size, percentage))
                     logging.info(f"Current price for token {instrument_token}: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}, Order Type:{candle_aggregator.current_order_type}")
                     if (candle_aggregator.order_active and
                             ((candle_aggregator.current_order_type == 'Buy' and candle_aggregator.current_stop_loss and current_price <= candle_aggregator.current_stop_loss) or
