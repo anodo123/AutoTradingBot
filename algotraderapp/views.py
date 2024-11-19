@@ -346,6 +346,8 @@ def save_json_to_mongodb(directory="."):
                 os.remove(file_path)
                 print(f"File {filename} deleted txt file")
             elif filename.endswith(".log"):
+                if filename == "server.log":
+                    continue
                 file_path = os.path.join(directory, filename)
                 # Delete the JSON file after successful insertion
                 os.remove(file_path)
