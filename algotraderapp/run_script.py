@@ -100,7 +100,7 @@ class CandleAggregator:
             tick_time = datetime.datetime.strptime(str(tick['current_datetime']), '%Y-%m-%d %H:%M:%S.%f%z')
 
             # Round the time to the nearest candle start time
-            candle_start_time = tick_time.replace(minute=(tick_time.minute // self.interval_minutes) * self.interval_minutes, second=0, microsecond=0)
+            candle_start_time = tick_time.replace(minute=(tick_time.minute // self.interval_minutes) * self.interval_minutes, second=0, microsecond=0,tzinfo=None)
 
             if self.current_candle is None or candle_start_time != datetime.datetime.strptime(self.current_candle['start_time'], '%Y-%m-%d %H:%M:%S'):
                 # If this is a new candle, store the previous one and start a new one
