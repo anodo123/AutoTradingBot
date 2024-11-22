@@ -172,6 +172,7 @@ def add_trading_instrument(request):
             "exit_trades_threshold_points":exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
             "instrument_details":instrument_details,
+            "timeframe":timeframe,
             "insertion_id":str(result.inserted_id)})
     except Exception as error:
         return JsonResponse({"Some Error Occured":True},status = 500)
@@ -235,7 +236,7 @@ def update_trading_instrument(request):
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}/")
         data = {}
         for key,value in request.POST.items():
-            if key not in ["lot_size","instrument_token","exit_trades_threshold_points","trade_calculation_percentage"]:
+            if key not in ["lot_size","instrument_token","exit_trades_threshold_points","trade_calculation_percentage","timeframe"]:
                 return JsonResponse({"Invalid Parameter":key})
             else:
                 if key =="instrument_token":
