@@ -99,17 +99,33 @@ def access_web_socket(request):
 @api_view(['POST'])
 def stop_web_socket(request):
     global ws_handler
-    try:
-        with ws_lock:
-            if ws_handler is None or not ws_handler.is_running():
-                return JsonResponse({"message": "WebSocket is not running"}, status=400)
 
-            ws_handler.stop_websocket()
+    with ws_lock:  # Ensure thread safety
+        if ws_handler is None:
+            print("Attempted to stop WebSocket, but it was already None.")
+            return JsonResponse(
+                {"status": "error", "message": "WebSocket is not initialized or already stopped."},
+                status=400
+            )
+
+        if not ws_handler.is_running():  # Ensure it's running before stopping
+            print("Attempted to stop WebSocket, but it is not running.")
+            return JsonResponse(
+                {"status": "error", "message": "WebSocket is not running."},
+                status=400
+            )
+
+        try:
+            ws_handler.stop_websocket()  # Stop the WebSocket
             ws_handler = None  # Clear the handler after stopping
-
-        return JsonResponse({"message": "WebSocket stopped successfully"})
-    except Exception as error:
-        return JsonResponse({"error": "Failed to stop WebSocket", "details": str(error)}, status=500)
+            print("WebSocket stopped successfully.")
+            return JsonResponse({"status": "success", "message": "WebSocket stopped successfully."})
+        except Exception as error:
+            print(f"Failed to stop WebSocket: {error}")
+            return JsonResponse(
+                {"status": "error", "message": "Failed to stop WebSocket.", "details": str(error)},
+                status=500
+            )
 
 
 @api_view(['POST'])
