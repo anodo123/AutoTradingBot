@@ -171,8 +171,8 @@ def add_trading_instrument(request):
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
-            "instrument_details":instrument_details,
             "timeframe":timeframe,
+            "instrument_details":instrument_details,
             "insertion_id":str(result.inserted_id)})
     except Exception as error:
         return JsonResponse({"Some Error Occured":True},status = 500)
