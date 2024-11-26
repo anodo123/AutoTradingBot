@@ -694,7 +694,7 @@ class WebSocketHandler:
         try:
             logging.info("Attempting to reconnect WebSocket...")
             self.kite_ticker.close()  # Close the existing connection
-            time.sleep(10)
+            time.sleep(2)
             self.kite_ticker.connect()  # Reconnect
         except Exception as e:
             logging.error(f"Error while reconnecting WebSocket: {e}")
@@ -882,7 +882,7 @@ class WebSocketHandler:
         """ Start the WebSocket and listen for ticks, with connection checks and retries. """
         # Connect to the WebSocket initially
         self.websocket_running = False
-        #self.kite_ticker.unsubscribe(self.instrument_tokens)
+        self.kite_ticker.unsubscribe(self.instrument_tokens)
         self.kite_ticker.close(1000,"No More Trade Required")
         #self.kite_ticker.
     def is_running(self):
