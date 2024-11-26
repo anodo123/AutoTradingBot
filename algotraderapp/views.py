@@ -104,45 +104,52 @@ def stop_web_socket(request):
     try:
         global ws_handler
 
-        # Configure logging within the function
-        logging.basicConfig(
-            filename='websocket_handler.log',  # Log file path
-            level=logging.INFO,  # Log level
-            format='%(asctime)s - %(levelname)s - %(message)s',  # Log format
-        )
+        # Set up logging with a FileHandler
+        logger = logging.getLogger("stop_web_socket")
+        logger.setLevel(logging.INFO)
+
+        # Avoid duplicate handlers
+        if not logger.handlers:
+            log_file_path = os.path.join(os.getcwd(), "stop_web_socket.log")
+            file_handler = logging.FileHandler(log_file_path)
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+
+        logger.info("Received request to stop WebSocket.")
 
         with ws_lock:  # Ensure thread safety
-            # Check if the WebSocket handler is None
             if ws_handler is None:
-                logging.warning("Attempted to stop WebSocket, but it was already None.")
+                logger.warning("Attempted to stop WebSocket, but it was already None.")
                 return JsonResponse(
                     {"status": "error", "message": "WebSocket is not initialized or already stopped."},
                     status=400
                 )
 
-            # Check if the WebSocket is running
             if not ws_handler.is_running():
-                logging.warning("Attempted to stop WebSocket, but it is not running.")
+                logger.warning("Attempted to stop WebSocket, but it is not running.")
                 return JsonResponse(
                     {"status": "error", "message": "WebSocket is not running."},
                     status=400
                 )
 
-            # Attempt to stop the WebSocket
             try:
                 ws_handler.stop_websocket()  # Stop the WebSocket
                 ws_handler = None  # Clear the handler after stopping
-                logging.info("WebSocket stopped successfully.")
+                logger.info("WebSocket stopped successfully.")
                 return JsonResponse({"status": "success", "message": "WebSocket stopped successfully."})
             except Exception as error:
-                # Log the error and respond with details
-                logging.error(f"Failed to stop WebSocket: {error}")
+                logger.error(f"Failed to stop WebSocket: {error}")
                 return JsonResponse(
                     {"status": "error", "message": "Failed to stop WebSocket.", "details": str(error)},
                     status=500
                 )
     except Exception as error:
+        # Log unhandled exceptions
+        logger = logging.getLogger("stop_web_socket")
+        logger.critical(f"Unhandled exception occurred: {error}")
         return JsonResponse({"Some Error Occurred": str(error)}, status=500)
+
 
 
 @api_view(['POST'])

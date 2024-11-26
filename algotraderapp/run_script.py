@@ -879,11 +879,41 @@ class WebSocketHandler:
 
 
     def stop_websocket(self):
-        """ Start the WebSocket and listen for ticks, with connection checks and retries. """
-        # Connect to the WebSocket initially
-        self.websocket_running = False
-        self.kite_ticker.unsubscribe(self.instrument_tokens)
-        self.kite_ticker.close(1000,"No More Trade Required")
+        """Stop the WebSocket and handle cleanup, with logging."""
+        try:
+            # Set up logging with a FileHandler
+            logger = logging.getLogger("stop_websocket")
+            logger.setLevel(logging.INFO)
+
+            # Avoid duplicate handlers
+            if not logger.handlers:
+                file_handler = logging.FileHandler("stop_websocket_run_script_.log")
+                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
+
+            logger.info("Attempting to stop the WebSocket.")
+
+            # Check if the WebSocket is already stopped
+            if not self.websocket_running:
+                logger.warning("WebSocket stop called, but it was not running.")
+                return
+
+            # Perform unsubscription
+            self.kite_ticker.unsubscribe(self.instrument_tokens)
+            logger.info(f"Unsubscribed from tokens: {self.instrument_tokens}")
+
+            # Close the WebSocket connection
+            self.kite_ticker.close(1000, "No More Trade Required")
+            logger.info("WebSocket closed with code 1000 and reason 'No More Trade Required'.")
+
+            # Update the running state
+            self.websocket_running = False
+            logger.info("WebSocket stopped successfully.")
+        except Exception as error:
+            # Log any exception that occurs during the stop process
+            logger.error(f"Failed to stop WebSocket: {error}")
+
         #self.kite_ticker.
     def is_running(self):
         """ Start the WebSocket and listen for ticks, with connection checks and retries. """
