@@ -609,12 +609,12 @@ class CandleAggregator:
             if self.close_trade_for_the_day:
                 return True
             if not self.close_trade_for_the_day and self.profit_threshold_points and self.profit_threshold_points>=exit_trades_threshold_points and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'):            
-                close_order_logger.info(f"Threshold hit for {trading_symbol} at price: {current_price}")
+                close_order_logger.info(f"Threshold hit for {exit_trades_threshold_points} and {self.profit_threshold_points} and {self.profit_threshold_points>=exit_trades_threshold_points} {trading_symbol} at price: {current_price}")
 
                 # Calculate daily profit or loss before reversing the order
                 #self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
                 # Stop-loss hit, place reverse order
-                reverse_order_type = "Sell" if strategy_response['order_type'] == "Buy" else "Buy"
+                reverse_order_type = "Sell" if self.current_order_type and self.current_order_type == "Buy" else "Buy"
                 close_order_logger.info(f"Reverse order type determined as: {reverse_order_type}")
                 
                 # Place the reverse order at the stop-loss price for square off
@@ -622,6 +622,7 @@ class CandleAggregator:
                 for position in kite.positions()['net']:
                     if position['tradingsymbol'] ==  trading_symbol and position['quantity']!=0:
                         #squaringoffopenpositions
+                        close_order_logger.info(f"Reverse order placement  {reverse_order_type} for {trading_symbol} with {position['quantity']}")
                         reverse_order_id_sq_off = self.place_single_order(
                                                             kite,
                                                             instrument_token,
@@ -635,6 +636,12 @@ class CandleAggregator:
                                                             percentage,
                                                             order_mode="Final Square Off"
                                                         )
+                close_order_logger.info(
+                                            f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {trading_symbol} due to threshold. "
+                                            f"Closing trade for the day for instrument {instrument_token}. "
+                                            f"Exit threshold points: {exit_trades_threshold_points}, "
+                                            f"Profit threshold points: {self.profit_threshold_points}"
+                                        )
                 logging.info(
                      f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {trading_symbol} due to threshold. "
                     f"Closing trade for the day for instrument {instrument_token}. "
@@ -646,6 +653,7 @@ class CandleAggregator:
             return False  # Trade should not be closed
         except Exception as error:
             logging.error(f"Error should_close_trade: {str(error)}")
+            close_order_logger.info(f"Error should_close_trade: {str(error)}")
             return False
 
 # WebSocket Handler Class
@@ -902,7 +910,6 @@ class WebSocketHandler:
             # Perform unsubscription
             self.kite_ticker.unsubscribe(self.instrument_tokens)
             logger.info(f"Unsubscribed from tokens: {self.instrument_tokens}")
-
             # Close the WebSocket connection
             self.kite_ticker.close(1000, "No More Trade Required")
             logger.info("WebSocket closed with code 1000 and reason 'No More Trade Required'.")

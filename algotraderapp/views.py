@@ -134,7 +134,7 @@ def stop_web_socket(request):
                 )
 
             try:
-                ws_handler.stop_websocket()  # Stop the WebSocket
+                #ws_handler.stop_websocket()  # Stop the WebSocket
                 ws_handler = None  # Clear the handler after stopping
                 logger.info("WebSocket stopped successfully.")
                 return JsonResponse({"status": "success", "message": "WebSocket stopped successfully."})
