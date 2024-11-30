@@ -22,6 +22,8 @@ from zoneinfo import ZoneInfo
 import logging
 from django.http import JsonResponse
 from rest_framework.decorators import api_view
+import subprocess
+
 # Global variable to hold the WebSocket handler
 ws_handler = None
 ws_lock = threading.Lock()
@@ -104,11 +106,9 @@ def stop_web_socket(request):
     try:
         global ws_handler
 
-        # Set up logging with a FileHandler
         logger = logging.getLogger("stop_web_socket")
         logger.setLevel(logging.INFO)
 
-        # Avoid duplicate handlers
         if not logger.handlers:
             log_file_path = os.path.join(os.getcwd(), "stop_web_socket.log")
             file_handler = logging.FileHandler(log_file_path)
@@ -118,26 +118,39 @@ def stop_web_socket(request):
 
         logger.info("Received request to stop WebSocket.")
 
-        with ws_lock:  # Ensure thread safety
+        with ws_lock:
             if ws_handler is None:
-                logger.warning("Attempted to stop WebSocket, but it was already None.")
+                logger.warning("WebSocket handler is None. No active WebSocket to stop.")
                 return JsonResponse(
                     {"status": "error", "message": "WebSocket is not initialized or already stopped."},
                     status=400
                 )
 
-            if not ws_handler.is_running():
-                logger.warning("Attempted to stop WebSocket, but it is not running.")
-                return JsonResponse(
-                    {"status": "error", "message": "WebSocket is not running."},
-                    status=400
-                )
-
             try:
-                #ws_handler.stop_websocket()  # Stop the WebSocket
-                ws_handler = None  # Clear the handler after stopping
-                logger.info("WebSocket stopped successfully.")
-                return JsonResponse({"status": "success", "message": "WebSocket stopped successfully."})
+                if ws_handler.is_running():
+                    ws_handler.stop_websocket()
+                    logger.info("WebSocket stopped successfully.")
+                else:
+                    logger.warning("WebSocket is not running.")
+                
+                ws_handler = None
+                logger.info("WebSocket handler cleared.")
+                
+                # Stop the container using Docker CLI
+                logger.info("Stopping the Docker container.")
+                container_id = os.getenv("HOSTNAME")  # Gets the container ID
+                try:
+                    subprocess.run(["docker", "stop", container_id], check=True)
+                except Exception as error:
+                    os._exit(1)
+
+                return JsonResponse({"status": "success", "message": "WebSocket and container stopped successfully."})
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to stop the Docker container: {e}")
+                return JsonResponse(
+                    {"status": "error", "message": "Failed to stop the Docker container.", "details": str(e)},
+                    status=500
+                )
             except Exception as error:
                 logger.error(f"Failed to stop WebSocket: {error}")
                 return JsonResponse(
@@ -145,10 +158,10 @@ def stop_web_socket(request):
                     status=500
                 )
     except Exception as error:
-        # Log unhandled exceptions
         logger = logging.getLogger("stop_web_socket")
         logger.critical(f"Unhandled exception occurred: {error}")
-        return JsonResponse({"Some Error Occurred": str(error)}, status=500)
+        return JsonResponse({"status": "error", "message": "An unexpected error occurred.", "details": str(error)}, status=500)
+
 
 
 
