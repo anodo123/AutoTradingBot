@@ -637,13 +637,13 @@ class CandleAggregator:
                                                             order_mode="Final Square Off"
                                                         )
                 close_order_logger.info(
-                                            f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {trading_symbol} due to threshold. "
+                                            f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} - Closing trade for {trading_symbol} due to threshold."
                                             f"Closing trade for the day for instrument {instrument_token}. "
                                             f"Exit threshold points: {exit_trades_threshold_points}, "
                                             f"Profit threshold points: {self.profit_threshold_points}"
                                         )
                 logging.info(
-                     f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {trading_symbol} due to threshold. "
+                    f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} - Closing trade for {trading_symbol} due to threshold."
                     f"Closing trade for the day for instrument {instrument_token}. "
                     f"Exit threshold points: {exit_trades_threshold_points}, "
                     f"Profit threshold points: {self.profit_threshold_points}"
@@ -711,7 +711,7 @@ class WebSocketHandler:
         # Process each tick and store candles
         try:
             logging.info(f"Received ticks: {ticks}")
-            print(f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} Received ticks: {ticks}", file=open('ticks.txt', 'a'))
+            print(f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} Received ticks: {ticks}", file=open('ticks.txt', 'a'))
             current_datetime = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
             # Check if the current time is before 9 AM
             if  datetime.datetime.now(ZoneInfo("Asia/Kolkata")).hour < 9:
@@ -813,7 +813,7 @@ class WebSocketHandler:
                         
                         # Stop-loss hit, handle reverse order
                         logging.warning(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
-                        print(f"{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss},Order Type:{candle_aggregator.current_order_type}", file=open("reverse_logic entered.log", "a"))
+                        print(f"{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss},Order Type:{candle_aggregator.current_order_type}", file=open("reverse_logic entered.log", "a"))
                         candle_aggregator.handle_reverse_order(
                             self.kite,
                             instrument_token, 

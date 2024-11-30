@@ -1,5 +1,5 @@
 # Use a lightweight Python image
-FROM python:3.9-slim
+FROM python:3.10-slim
 
 # Set the working directory inside the container
 WORKDIR /app
@@ -18,7 +18,7 @@ COPY . /app
 EXPOSE 8000
 
 # Ensure old logs are handled cleanly
-RUN [ -e NO_INDICATOR_BOT/server.log ] && rm NO_INDICATOR_BOT/server.log || echo "No server.log to remove"
+RUN [ -e server.log ] && rm server.log || echo "No server.log to remove"
 
 # Set the default command to run the application with Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "NO_INDICATOR_BOT.wsgi:application"]
+CMD ["python", "manage.py", "runserver","0.0.0.0:8000"]
