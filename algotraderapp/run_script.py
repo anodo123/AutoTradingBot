@@ -23,14 +23,14 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 class CandleAggregator:
-    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=15 ,file_path='minute_candles.json'):
+    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=15 ,file_path='minute_candles.json',trade_side="BOTH"):
         self.file_path = str(instrument_token)+'_'+str(interval_minutes) + '_' + file_path
         self.instrument_token = instrument_token  # Add the instrument token
         self.tradingsymbol = tradingsymbol  # Add the instrument token
         self.interval_minutes = interval_minutes
         self.current_candle = None
         self.candles = []  # This can remain as a list if needed elsewhere
-
+        self.trade_side = trade_side
         # Attributes for order management
         self.current_stop_loss = None
         self.current_order_type = None
@@ -197,6 +197,11 @@ class CandleAggregator:
                 print(f"Sell signal generated. Stop Loss: {stop_loss}", file=log_file)
             else:
                 print(f"No signals generated. Conditions not met.", file=log_file)
+
+            #Adjusting Strategy based on user defined order sides
+            if response and "order_type" in response:
+                if (self.trade_side == "BUY" and response["order_type"].lower() == "sell") or \
+                (self.trade_side == "SELL" and response["order_type"].lower() == "buy"):response = {}
 
             print(f"Response: {response}", file=log_file)
 
@@ -367,24 +372,28 @@ class CandleAggregator:
             #         #squaredoffsuccessfully
             #         self.order_active = False
             # Place the reverse order at the stop-loss price
-            reverse_order_id = self.place_single_order(
-                                                kite,
-                                                instrument_token,
-                                                trading_symbol,
-                                                exchange,
-                                                exit_trades_threshold_points,
-                                                reverse_order_type,
-                                                lot_size,
-                                                stop_loss_price,
-                                                stop_loss_price,  # Using stop-loss price as the price for the reverse order
-                                                percentage,
-                                                order_mode="Reverse Mode"
-                                            )
-            
-            if reverse_order_id:
-                reverse_order_logger.info(f"Reverse order placed with ID: {reverse_order_id} for {reverse_order_type} on {trading_symbol}")
+            if self.trade_side == "BOTH":
+                reverse_order_id = self.place_single_order(
+                                                        kite,
+                                                        instrument_token,
+                                                        trading_symbol,
+                                                        exchange,
+                                                        exit_trades_threshold_points,
+                                                        reverse_order_type,
+                                                        lot_size,
+                                                        stop_loss_price,
+                                                        stop_loss_price,  # Using stop-loss price as the price for the reverse order
+                                                        percentage,
+                                                        order_mode="Reverse Mode"
+                                                    )
+                
+                if reverse_order_id:
+                    reverse_order_logger.info(f"Reverse order placed with ID: {reverse_order_id} for {reverse_order_type} on {trading_symbol}")
+                else:
+                    reverse_order_logger.warning(f"Failed to place reverse order for {trading_symbol}.")
             else:
-                reverse_order_logger.warning(f"Failed to place reverse order for {trading_symbol}.")
+                #if order is not both side make order inactive
+                self.order_active = False
         else:
             reverse_order_logger.debug("Stop-loss condition not met. No reverse order placed.")
 
@@ -668,7 +677,9 @@ class WebSocketHandler:
         self.instrument_tokens = [int(x['instrument_token']) for x in instruments]
         # Create a CandleAggregator instance for each instrument, passing the instrument_token
         self.candle_aggregators = {
-            x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),tradingsymbol=x['instrument_details']['tradingsymbol'],interval_minutes=int(x['timeframe'])) for x in instruments
+            x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),
+                                                    tradingsymbol=x['instrument_details']['tradingsymbol'],
+                                                    interval_minutes=int(x['timeframe']),trade_side=x['trade_side']) for x in instruments
         }
 
         # Define on_ticks method
