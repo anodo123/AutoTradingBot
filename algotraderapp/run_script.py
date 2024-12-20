@@ -12,6 +12,7 @@ import math
 import asyncio
 import sys
 from zoneinfo import ZoneInfo
+from collections import defaultdict
 # Initialize Redis client using Django settings
 # redis_client = redis.StrictRedis(
 #     host=REDIS_HOST,
@@ -23,7 +24,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 class CandleAggregator:
-    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=15 ,file_path='minute_candles.json',trade_side="BOTH"):
+    def __init__(self, instrument_token,tradingsymbol ,interval_minutes=15 ,file_path='minute_candles.json',trade_side="BOTH",instrument_details_dict = []):
         self.file_path = str(instrument_token)+'_'+str(interval_minutes) + '_' + file_path
         self.instrument_token = instrument_token  # Add the instrument token
         self.tradingsymbol = tradingsymbol  # Add the instrument token
@@ -41,6 +42,7 @@ class CandleAggregator:
         self.close_trade_for_the_day = False
         self.previous_trailing_candle = None
         self.open_positions = False
+        self.instrument_details_dict = instrument_details_dict
         # Load previous candles from the file, if available
         if os.path.exists(self.file_path):
             with open(self.file_path, 'r') as file:
@@ -252,6 +254,8 @@ class CandleAggregator:
                 # Check for existing orders
                 order_id = None
 
+                f.write(f"----------------------------------------------------------------------------------------------------------------------------")
+                f.write(f"----------------------------------------------------------------------------------------------------------------------------")
                 f.write(f"Attempting {order_mode} to place order for {trading_symbol} - {order_type} {quantity} stop loss {stop_loss} price {price}.\n")
                 if self.close_trade_for_the_day:
                     f.write(f" Trade Closed for Attempted {order_mode} for {trading_symbol}")
@@ -414,23 +418,18 @@ class CandleAggregator:
         
         try:
             # Fetch all orders
-            all_orders = kite.orders()
+            all_orders = kite.positions()
             logging.info(f"Fetched {len(all_orders)} orders from Kite API.")
 
-            # Filter for completed buy/sell orders
-            completed_orders = [
-                order for order in all_orders if order['status'] == 'COMPLETE' and
-                order['transaction_type'] in ['BUY', 'SELL'] and 
-                order['tradingsymbol'] == trading_symbol
-            ]
-            logging.info(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
+            # logging.info(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
 
-            # Sort orders by timestamp
-            sorted_orders = sorted(completed_orders, key=lambda x: x['order_timestamp'])
+            # # Sort orders by timestamp
+            # sorted_orders = sorted(completed_orders, key=lambda x: x['order_timestamp'])
             logging.info("Sorted orders by timestamp.")
 
             # Calculate daily profit or loss based on the sorted orders
-            daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
+            #daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
+            daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(all_orders,exit_trades_threshold_points)
             logging.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
             
             # Assign the daily profit/loss to the profit threshold points
@@ -449,95 +448,44 @@ class CandleAggregator:
             logging.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
             return 0
     
-    async def calculate_total_profit_loss_per_share(self, sorted_orders, current_price,trading_symbol):
+    #async def calculate_total_profit_loss_per_share(self, sorted_orders, current_price,trading_symbols_list = []):
+    async def calculate_total_profit_loss_per_share(self, data,current_threshold):
         """
-        Calculate total profit or loss per share, including realized and unrealized P/L.
+        Calculate realized and unrealized profit per share for a given trading symbol.
+        :param trading_symbol: The trading symbol to calculate the profit for.
+        :param data: JSON data containing trading details.
+        :return: Realized and unrealized profit per share for the trading symbol.
         """
         try:
-            # Set up logging with a FileHandler
-            logger = logging.getLogger("calculate_total_profit_loss_per_share")
-            logger.setLevel(logging.INFO)
+            logging.basicConfig(
+                filename="calculate_total_profit_loss_per_share.log",  # The file to write logs to
+                filemode="a",  # Append to the file instead of overwriting
+                format="%(asctime)s - %(levelname)s - %(message)s",  # Log message format
+                level=logging.DEBUG  # Log level; use DEBUG for detailed logs
+            )
+            
+            logging.info("Starting calculate_total_profit_loss_per_share process.")
+            realized_profit_per_share = 0
+            unrealized_profit_per_share = 0
 
-            # Avoid duplicate handlers
-            if not logger.handlers:
-                file_handler = logging.FileHandler("calculate_total_profit_loss_per_share.log")
-                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-                file_handler.setFormatter(formatter)
-                logger.addHandler(file_handler)
+            combinedthresholdinstrumentdetails = {}
+            for single_dict in self.instrument_details_dict[str(int(current_threshold))]:
+                combinedthresholdinstrumentdetails[single_dict['tradingsymbol']] = single_dict['lot_size']
 
-            realized_profit_loss_per_share = 0  # Realized P/L per share
-            unrealized_profit_loss_per_share = 0  # Unrealized P/L per share
-            self.open_position = False
-            self.open_price = None
-            self.open_quantity = 0
-            self.current_order_type = None
+            trading_symbols_list = [x['tradingsymbol'] for x in  self.instrument_details_dict[str(int(current_threshold))]]
+            # Aggregate unrealized profit from the 'net' section
+            for item in data['net']:
+                if item['tradingsymbol'] in trading_symbols_list:
+                    current_lot_size = int(combinedthresholdinstrumentdetails[item['tradingsymbol']])
+                    realized_profit_per_share += item['realised'] /current_lot_size
+                    unrealized_profit_per_share += item['unrealised'] / current_lot_size
 
-            for order in sorted_orders:
-                avg_price = order['average_price']
-                quantity = order['quantity']  # Keeping track for open positions
-                transaction_type = order['transaction_type']
-
-                if transaction_type == 'BUY':
-                    if not self.open_position:
-                        # Open a new Buy position
-                        self.open_price = avg_price
-                        self.open_quantity = quantity
-                        self.current_order_type = "Buy"
-                        self.open_position = True
-                    elif self.current_order_type == "Sell":
-                        if self.open_quantity == quantity:
-                            # Fully close Sell position
-                            realized_profit_loss_per_share += (self.open_price - avg_price)
-                            self._reset_position()
-                        elif quantity < self.open_quantity:
-                            # Partially close Sell position
-                            realized_profit_loss_per_share += (self.open_price - avg_price)
-                            self.open_quantity -= quantity
-                        else:
-                            pass
-
-                elif transaction_type == 'SELL':
-                    if not self.open_position:
-                        # Open a new Sell position
-                        self.open_price = avg_price
-                        self.open_quantity = quantity
-                        self.current_order_type = "Sell"
-                        self.open_position = True
-                    elif self.current_order_type == "Buy":
-                        if self.open_quantity == quantity:
-                            # Fully close Buy position
-                            realized_profit_loss_per_share += (avg_price - self.open_price)
-                            self._reset_position()
-                        elif quantity < self.open_quantity:
-                            # Partially close Buy position
-                            realized_profit_loss_per_share += (avg_price - self.open_price)
-                            self.open_quantity -= quantity
-                        else:
-                            pass
-
-            # Calculate unrealized profit or loss per share for open positions
-            if self.open_position:
-                if self.current_order_type == "Buy":
-                    unrealized_profit_loss_per_share = (current_price - self.open_price)
-                elif self.current_order_type == "Sell":
-                    unrealized_profit_loss_per_share = (self.open_price - current_price)
-
-            # Total profit or loss per share
-            total_profit_loss_per_share = realized_profit_loss_per_share + unrealized_profit_loss_per_share
-
-            logging.info(f"Realized P/L per share: {realized_profit_loss_per_share}")
-            logging.info(f"Unrealized P/L per share: {unrealized_profit_loss_per_share}")
-            logging.info(f"Total P/L per share: {total_profit_loss_per_share}")
-
-            return total_profit_loss_per_share
+            logging.info(f"Calculated profits per share for {trading_symbols_list}: Realized P/L per share = {realized_profit_per_share}, Unrealized P/L per share = {unrealized_profit_per_share}")
+            return unrealized_profit_per_share
 
         except Exception as error:
-            logging.error(f"Error in calculate_total_profit_loss_per_share: {error}", exc_info=True)
-            return 0, 0, 0
-
-
-
-
+            logging.error(f"Error calculating profit per share for {trading_symbols_list}: {error}", exc_info=True)
+            return 0
 
     def update_trailing_stop_loss(self, kite, percentage,tradingsymbol):
         """ Update trailing stop loss for open orders based on the latest candle values. """
@@ -679,7 +627,8 @@ class WebSocketHandler:
         self.candle_aggregators = {
             x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),
                                                     tradingsymbol=x['instrument_details']['tradingsymbol'],
-                                                    interval_minutes=int(x['timeframe']),trade_side=x['trade_side']) for x in instruments
+                                                    interval_minutes=int(x['timeframe']),trade_side=x['trade_side'],
+                                                    instrument_details_dict = self.restructure_for_combined_threshold(instruments)) for x in instruments
         }
 
         # Define on_ticks method
@@ -947,3 +896,36 @@ class WebSocketHandler:
         backoff_time = 5  # Initial backoff time in seconds
         max_backoff_time = 60  # Maximum backoff time in seconds
         is_reconnecting = False
+
+
+    def restructure_for_combined_threshold(self, instruments_data=[]):
+        """
+        Groups instruments by their 'exit_trades_threshold_points' values.
+
+        Parameters:
+        - instruments_data (list): A list of dictionaries containing instrument details.
+
+        Returns:
+        - dict: A dictionary grouping instruments by 'exit_trades_threshold_points'.
+        """
+        try:
+            grouped_data = defaultdict(list)
+            
+            for instrument in instruments_data:
+                exit_threshold = instrument.get('exit_trades_threshold_points')
+                if exit_threshold is None:
+                    continue  # Skip invalid entries with missing 'exit_trades_threshold_points'
+                
+                grouped_data[exit_threshold].append({
+                    "instrument_token": instrument.get('instrument_token'),
+                    "tradingsymbol": instrument.get('instrument_details', {}).get('tradingsymbol'),
+                    "exit_trades_threshold_points": exit_threshold,
+                    "lot_size":instrument.get('lot_size')
+                })
+            
+            return dict(grouped_data)  # Convert defaultdict to regular dict for output consistency
+        
+        except (KeyError, TypeError) as error:
+            # Log the error for better debugging
+            print(f"Error restructuring data: {error}")
+            return {}
