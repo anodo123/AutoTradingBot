@@ -418,22 +418,36 @@ class CandleAggregator:
         
         try:
             # Fetch all orders
-            all_orders = kite.positions()
+            all_orders = kite.orders()
             logging.info(f"Fetched {len(all_orders)} orders from Kite API.")
 
-            # logging.info(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
+            # Filter for completed buy/sell orders
+            completed_orders = [
+                order for order in all_orders if order['status'] == 'COMPLETE' and
+                order['transaction_type'] in ['BUY', 'SELL'] and 
+                order['tradingsymbol'] == trading_symbol
+            ]
+            logging.info(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
 
-            # # Sort orders by timestamp
-            # sorted_orders = sorted(completed_orders, key=lambda x: x['order_timestamp'])
+            # Sort orders by timestamp
+            sorted_orders = sorted(completed_orders, key=lambda x: x['order_timestamp'])
             logging.info("Sorted orders by timestamp.")
 
             # Calculate daily profit or loss based on the sorted orders
-            #daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
-            daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(all_orders,exit_trades_threshold_points)
+            daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
             logging.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
-            
+            self.write_profit_loss_to_json({trading_symbol:daily_profit_loss_per_share})
+
+
+            # combinedthresholdinstrumentdetails = {}
+            # for single_dict in self.instrument_details_dict[str(int(exit_trades_threshold_points))]:
+            #     combinedthresholdinstrumentdetails[single_dict['tradingsymbol']] = single_dict['lot_size']
+
+            trading_symbols_list = [x['tradingsymbol'] for x in  self.instrument_details_dict[str(int(exit_trades_threshold_points))]]
+
             # Assign the daily profit/loss to the profit threshold points
-            self.profit_threshold_points = daily_profit_loss_per_share
+            self.profit_threshold_points = self.fetch_profit_loss_from_json_dict(trading_symbols_list)
+
             #self.profit_threshold_points = 0 #assigned to zero for testing
             logging.info(f"Updated profit threshold points: {self.profit_threshold_points}")
             if self.profit_threshold_points>=exit_trades_threshold_points:
@@ -448,44 +462,93 @@ class CandleAggregator:
             logging.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
             return 0
     
-    #async def calculate_total_profit_loss_per_share(self, sorted_orders, current_price,trading_symbols_list = []):
-    async def calculate_total_profit_loss_per_share(self, data,current_threshold):
+    async def calculate_total_profit_loss_per_share(self, sorted_orders, current_price,trading_symbol):
         """
-        Calculate realized and unrealized profit per share for a given trading symbol.
-        :param trading_symbol: The trading symbol to calculate the profit for.
-        :param data: JSON data containing trading details.
-        :return: Realized and unrealized profit per share for the trading symbol.
+        Calculate total profit or loss per share, including realized and unrealized P/L.
         """
         try:
-            logging.basicConfig(
-                filename="calculate_total_profit_loss_per_share.log",  # The file to write logs to
-                filemode="a",  # Append to the file instead of overwriting
-                format="%(asctime)s - %(levelname)s - %(message)s",  # Log message format
-                level=logging.DEBUG  # Log level; use DEBUG for detailed logs
-            )
-            
-            logging.info("Starting calculate_total_profit_loss_per_share process.")
-            realized_profit_per_share = 0
-            unrealized_profit_per_share = 0
+            # Set up logging with a FileHandler
+            logger = logging.getLogger("calculate_total_profit_loss_per_share")
+            logger.setLevel(logging.INFO)
 
-            combinedthresholdinstrumentdetails = {}
-            for single_dict in self.instrument_details_dict[str(int(current_threshold))]:
-                combinedthresholdinstrumentdetails[single_dict['tradingsymbol']] = single_dict['lot_size']
+            # Avoid duplicate handlers
+            if not logger.handlers:
+                file_handler = logging.FileHandler("calculate_total_profit_loss_per_share.log")
+                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
 
-            trading_symbols_list = [x['tradingsymbol'] for x in  self.instrument_details_dict[str(int(current_threshold))]]
-            # Aggregate unrealized profit from the 'net' section
-            for item in data['net']:
-                if item['tradingsymbol'] in trading_symbols_list:
-                    current_lot_size = int(combinedthresholdinstrumentdetails[item['tradingsymbol']])
-                    realized_profit_per_share += item['realised'] /current_lot_size
-                    unrealized_profit_per_share += item['unrealised'] / current_lot_size
+            realized_profit_loss_per_share = 0  # Realized P/L per share
+            unrealized_profit_loss_per_share = 0  # Unrealized P/L per share
+            self.open_position = False
+            self.open_price = None
+            self.open_quantity = 0
+            self.current_order_type = None
 
-            logging.info(f"Calculated profits per share for {trading_symbols_list}: Realized P/L per share = {realized_profit_per_share}, Unrealized P/L per share = {unrealized_profit_per_share}")
-            return unrealized_profit_per_share
+            for order in sorted_orders:
+                avg_price = order['average_price']
+                quantity = order['quantity']  # Keeping track for open positions
+                transaction_type = order['transaction_type']
+
+                if transaction_type == 'BUY':
+                    if not self.open_position:
+                        # Open a new Buy position
+                        self.open_price = avg_price
+                        self.open_quantity = quantity
+                        self.current_order_type = "Buy"
+                        self.open_position = True
+                    elif self.current_order_type == "Sell":
+                        if self.open_quantity == quantity:
+                            # Fully close Sell position
+                            realized_profit_loss_per_share += (self.open_price - avg_price)
+                            self._reset_position()
+                        elif quantity < self.open_quantity:
+                            # Partially close Sell position
+                            realized_profit_loss_per_share += (self.open_price - avg_price)
+                            self.open_quantity -= quantity
+                        else:
+                            pass
+
+                elif transaction_type == 'SELL':
+                    if not self.open_position:
+                        # Open a new Sell position
+                        self.open_price = avg_price
+                        self.open_quantity = quantity
+                        self.current_order_type = "Sell"
+                        self.open_position = True
+                    elif self.current_order_type == "Buy":
+                        if self.open_quantity == quantity:
+                            # Fully close Buy position
+                            realized_profit_loss_per_share += (avg_price - self.open_price)
+                            self._reset_position()
+                        elif quantity < self.open_quantity:
+                            # Partially close Buy position
+                            realized_profit_loss_per_share += (avg_price - self.open_price)
+                            self.open_quantity -= quantity
+                        else:
+                            pass
+
+            # Calculate unrealized profit or loss per share for open positions
+            if self.open_position:
+                if self.current_order_type == "Buy":
+                    unrealized_profit_loss_per_share = (current_price - self.open_price)
+                elif self.current_order_type == "Sell":
+                    unrealized_profit_loss_per_share = (self.open_price - current_price)
+
+            # Total profit or loss per share
+            total_profit_loss_per_share = realized_profit_loss_per_share + unrealized_profit_loss_per_share
+
+            logging.info(f"Realized P/L per share: {realized_profit_loss_per_share}")
+            logging.info(f"Unrealized P/L per share: {unrealized_profit_loss_per_share}")
+            logging.info(f"Total P/L per share: {total_profit_loss_per_share}")
+
+            return total_profit_loss_per_share
 
         except Exception as error:
-            logging.error(f"Error calculating profit per share for {trading_symbols_list}: {error}", exc_info=True)
-            return 0
+            logging.error(f"Error in calculate_total_profit_loss_per_share: {error}", exc_info=True)
+            return 0, 0, 0
+
+
 
     def update_trailing_stop_loss(self, kite, percentage,tradingsymbol):
         """ Update trailing stop loss for open orders based on the latest candle values. """
@@ -612,6 +675,77 @@ class CandleAggregator:
             logging.error(f"Error should_close_trade: {str(error)}")
             close_order_logger.info(f"Error should_close_trade: {str(error)}")
             return False
+
+
+    def write_profit_loss_to_json(self,profit_loss_data, filename="current_profit_loss.json"):
+        """
+        Appends profit or loss data to a JSON file in the format
+        :param profit_loss_data: Dictionary containing stock symbols and their profit/loss values
+        :param filename: The name of the JSON file to write to (default: profit_loss.json)
+        """
+        try:
+            # Set up logging with a FileHandler
+            logger = logging.getLogger("trailing_stop_loss")
+            logger.setLevel(logging.INFO)
+
+            # Avoid duplicate handlers
+            if not logger.handlers:
+                file_handler = logging.FileHandler("trailing_stop_loss_updates.log")
+                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
+
+            try:
+                # Read existing data from the file if it exists
+                try:
+                    with open(filename, 'r') as file:
+                        existing_data = json.load(file)
+                except FileNotFoundError:
+                    # Create the file with an empty dictionary if it doesn't exist
+                    with open(filename, 'w') as file:
+                        json.dump({}, file)
+                    existing_data = {}
+
+                # Update the existing data with the new profit/loss data
+                existing_data.update(profit_loss_data)
+
+                # Write the updated data back to the file
+                with open(filename, 'w') as file:
+                    json.dump(existing_data, file, indent=4)
+
+                logger.info(f"Profit/loss data successfully updated in {filename}.")
+                print(f"Profit/loss data successfully updated in {filename}.")
+                return True
+            except Exception as e:
+                logger.error(f"An error occurred while updating the file: {e}")
+                print(f"An error occurred while updating the file: {e}")
+                return False
+        except Exception as e:
+            logger.error(f"An error occurred while updating the file: {e}")
+            print(f"An error occurred while updating the file: {e}")
+            return False
+    def fetch_profit_loss_from_json_dict(self,keys, filename="current_profit_loss.json"):
+        """
+        Fetches profit or loss values for one or more keys from a JSON file.
+
+        :param keys: List of keys to fetch values for.
+        :param filename: The name of the JSON file to read from (default: profit_loss.json)
+        :return: Dictionary containing the requested keys and their profit/loss values.
+        """
+        try:
+            # Read data from the file
+            with open(filename, 'r') as file:
+                data = json.load(file)
+
+            # Extract values for the requested keys
+            result = [data.get(key, 0) for key in keys]
+            return sum(result)
+        except FileNotFoundError:
+            print(f"The file {filename} does not exist.")
+            return 0
+        except Exception as e:
+            print(f"An error occurred while reading the file: {e}")
+            return 0
 
 # WebSocket Handler Class
 class WebSocketHandler:
