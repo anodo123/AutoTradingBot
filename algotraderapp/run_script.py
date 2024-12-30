@@ -98,19 +98,18 @@ class CandleAggregator:
 
             last_price = tick['last_price']
             with open('last_price_log.txt', 'a') as log_file: log_file.write(f"last_price: {tick['last_price']},{tick['current_datetime']}\n")
-
+            
+            # Parse tick time
             tick_time = datetime.datetime.strptime(str(tick['current_datetime']), '%Y-%m-%d %H:%M:%S.%f%z')
 
-            # Round the time to the nearest candle start time
-            candle_start_time = tick_time.replace(minute=(tick_time.minute // self.interval_minutes) * self.interval_minutes, second=0, microsecond=0,tzinfo=None)
+            # Make tick_time timezone-naive by stripping the tzinfo
+            tick_time = tick_time.replace(tzinfo=None)
 
-            if self.current_candle is None or candle_start_time != datetime.datetime.strptime(self.current_candle['start_time'], '%Y-%m-%d %H:%M:%S'):
-                # If this is a new candle, store the previous one and start a new one
-                if self.current_candle is not None:
-                    self.candles= self.save_candles(self.current_candle)
-                    #self.save_candles(self.current_candle)  # Save candles after every interval
+            # Align the tick time to the nearest second and reset microseconds
+            candle_start_time = tick_time.replace(second=0, microsecond=0)
 
-                # Start a new candle
+            # If no candle exists, create the first candle at the tick's time
+            if self.current_candle is None:
                 self.current_candle = {
                     'start_time': candle_start_time.strftime('%Y-%m-%d %H:%M:%S'),
                     'open': last_price,
@@ -120,16 +119,37 @@ class CandleAggregator:
                     'volume': tick['last_traded_quantity']
                 }
             else:
-                # Update the current candle's OHLC values and volume
-                self.current_candle['high'] = max(self.current_candle['high'], last_price)
-                self.current_candle['low'] = min(self.current_candle['low'], last_price)
-                self.current_candle['close'] = last_price
-                self.current_candle['volume'] += tick['last_traded_quantity']
+                # Get the start time of the current candle and make it timezone-naive
+                last_candle_start_time = datetime.datetime.strptime(self.current_candle['start_time'], '%Y-%m-%d %H:%M:%S')
+                last_candle_start_time = last_candle_start_time.replace(second=0, microsecond=0, tzinfo=None)
 
-                if self.current_candle is not None:
+                # Calculate the next candle's start time and make it timezone-naive
+                next_candle_start_time = last_candle_start_time + datetime.timedelta(minutes=self.interval_minutes)
+
+                # Check if the tick_time is within the current candle or if a new candle should start
+                if tick_time >= next_candle_start_time:
+                    # Save the previous candle if it exists
+                    self.candles = self.save_candles(self.current_candle)
+
+                    # Start a new candle at the next interval
+                    self.current_candle = {
+                        'start_time': next_candle_start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        'open': last_price,
+                        'high': last_price,
+                        'low': last_price,
+                        'close': last_price,
+                        'volume': tick['last_traded_quantity']
+                    }
+                else:
+                    # Update the current candle's OHLC values and volume
+                    self.current_candle['high'] = max(self.current_candle['high'], last_price)
+                    self.current_candle['low'] = min(self.current_candle['low'], last_price)
+                    self.current_candle['close'] = last_price
+                    self.current_candle['volume'] += tick['last_traded_quantity']
+
                     # Save the updated candle
                     self.candles = self.save_candles(self.current_candle)
-                    logging.debug(f"Candle updated and saved: {self.current_candle}")  # Log updated and saved candle
+                    logging.debug(f"Candle updated and saved: {self.current_candle}")
 
         except KeyError as e:
             logging.error(f"KeyError: Missing expected key {e} in tick: {tick}")

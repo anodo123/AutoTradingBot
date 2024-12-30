@@ -96,7 +96,7 @@ def access_web_socket(request):
                     return JsonResponse({"Websocket Already Running": True})            
             return JsonResponse({"Websocket Started": True,"access_token": access_token})
         else:
-            return HttpResponse("Session Not Started, Please Generate Session")
+            return JsonResponse({"Session Not Started, Please Generate Session":True},status = status.HTTP_412_PRECONDITION_FAILED)
     except Exception as error:
         return JsonResponse({"Some Error Occurred": str(error)}, status=500)
     
