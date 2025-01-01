@@ -98,7 +98,7 @@ class CandleAggregator:
 
             last_price = tick['last_price']
             with open('last_price_log.txt', 'a') as log_file: log_file.write(f"last_price: {tick['last_price']},{tick['current_datetime']}\n")
-            
+
             # Parse tick time
             tick_time = datetime.datetime.strptime(str(tick['current_datetime']), '%Y-%m-%d %H:%M:%S.%f%z')
 
@@ -116,20 +116,30 @@ class CandleAggregator:
                     'high': last_price,
                     'low': last_price,
                     'close': last_price,
-                    'volume': tick['last_traded_quantity']
+                    'volume': tick['last_traded_quantity'],
+                    'final_save': False
                 }
             else:
                 # Get the start time of the current candle and make it timezone-naive
                 last_candle_start_time = datetime.datetime.strptime(self.current_candle['start_time'], '%Y-%m-%d %H:%M:%S')
                 last_candle_start_time = last_candle_start_time.replace(second=0, microsecond=0, tzinfo=None)
 
-                # Calculate the next candle's start time and make it timezone-naive
+                # Calculate the next candle's start time
                 next_candle_start_time = last_candle_start_time + datetime.timedelta(minutes=self.interval_minutes)
 
-                # Check if the tick_time is within the current candle or if a new candle should start
+                # Check if the tick_time indicates the need for a new candle
                 if tick_time >= next_candle_start_time:
-                    # Save the previous candle if it exists
-                    self.candles = self.save_candles(self.current_candle)
+                    # Update the current candle's OHLC values before closing
+                    if not self.current_candle['final_save']:
+                        self.current_candle['high'] = max(self.current_candle['high'], last_price)
+                        self.current_candle['low'] = min(self.current_candle['low'], last_price)
+                        self.current_candle['close'] = last_price
+                        self.current_candle['volume'] += tick['last_traded_quantity']
+                        self.current_candle['final_save'] = True
+                        # Save the closed candle
+                        self.candles = self.save_candles(self.current_candle)
+                        logging.info(f"Candle closed and saved: {self.current_candle}")
+                        return 
 
                     # Start a new candle at the next interval
                     self.current_candle = {
@@ -138,7 +148,8 @@ class CandleAggregator:
                         'high': last_price,
                         'low': last_price,
                         'close': last_price,
-                        'volume': tick['last_traded_quantity']
+                        'volume': tick['last_traded_quantity'],
+                        'final_save': False
                     }
                 else:
                     # Update the current candle's OHLC values and volume
@@ -274,8 +285,8 @@ class CandleAggregator:
                 # Check for existing orders
                 order_id = None
 
-                f.write(f"----------------------------------------------------------------------------------------------------------------------------")
-                f.write(f"----------------------------------------------------------------------------------------------------------------------------")
+                f.write(f"----------------------------------------------------------------------------------------------------------------------------\n")
+                f.write(f"----------------------------------------------------------------------------------------------------------------------------\n")
                 f.write(f"Attempting {order_mode} to place order for {trading_symbol} - {order_type} {quantity} stop loss {stop_loss} price {price}.\n")
                 if self.close_trade_for_the_day:
                     f.write(f" Trade Closed for Attempted {order_mode} for {trading_symbol}")
@@ -321,7 +332,6 @@ class CandleAggregator:
                         self.order_active = False
                         f.write(f"{order_type} {order_mode} order NOT placed REJECTED for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
                         sys.exit()
-                
                 f.write(f"Order placed successfully for {trading_symbol}. Order ID: {order_id}\n")
                 return order_id
 
@@ -426,20 +436,28 @@ class CandleAggregator:
         """
         Fetch orders from Kite API and calculate daily profit or loss, with extensive logging.
         """
-        # Configure logging to write to a file within the function
-        logging.basicConfig(
-            filename="daily_profit_loss_calculation.log",  # The file to write logs to
-            filemode="a",  # Append to the file instead of overwriting
-            format="%(asctime)s - %(levelname)s - %(message)s",  # Log message format
-            level=logging.DEBUG  # Log level; use DEBUG for detailed logs
-        )
-        
-        logging.info("Starting fetch_and_calculate_daily_profit_loss process.")
+        # Create a logger
+        fetch_and_calculate_daily_profit_loss = logging.getLogger("daily_profit_loss_calculation")
+        fetch_and_calculate_daily_profit_loss.setLevel(logging.DEBUG)
+
+        # Create a file handler
+        file_handler = logging.FileHandler("daily_profit_loss_calculation.log")
+        file_handler.setLevel(logging.DEBUG)
+
+        # Create a formatter and set it for the file handler
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+
+        # Add the file handler to the logger
+        fetch_and_calculate_daily_profit_loss.addHandler(file_handler)
+
+        # Log an info message
+        #fetch_and_calculate_daily_profit_loss.info("Starting fetch_and_calculate_daily_profit_loss process.")
         
         try:
             # Fetch all orders
             all_orders = kite.orders()
-            logging.info(f"Fetched {len(all_orders)} orders from Kite API.")
+            fetch_and_calculate_daily_profit_loss.debug(f"Fetched {len(all_orders)} orders from Kite API.")
 
             # Filter for completed buy/sell orders
             completed_orders = [
@@ -447,15 +465,15 @@ class CandleAggregator:
                 order['transaction_type'] in ['BUY', 'SELL'] and 
                 order['tradingsymbol'] == trading_symbol
             ]
-            logging.info(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
+            fetch_and_calculate_daily_profit_loss.debug(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
 
             # Sort orders by timestamp
             sorted_orders = sorted(completed_orders, key=lambda x: x['order_timestamp'])
-            logging.info("Sorted orders by timestamp.")
+            fetch_and_calculate_daily_profit_loss.debug("Sorted orders by timestamp.")
 
             # Calculate daily profit or loss based on the sorted orders
             daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
-            logging.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
+            fetch_and_calculate_daily_profit_loss.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
             self.write_profit_loss_to_json({trading_symbol:daily_profit_loss_per_share})
 
 
@@ -469,18 +487,19 @@ class CandleAggregator:
             self.profit_threshold_points = self.fetch_profit_loss_from_json_dict(trading_symbols_list)
 
             #self.profit_threshold_points = 0 #assigned to zero for testing
-            logging.info(f"Updated profit threshold points: {self.profit_threshold_points}")
+            fetch_and_calculate_daily_profit_loss.info(f"Updated profit threshold points for {trading_symbol} and  list {trading_symbols_list}: {self.profit_threshold_points}")
             if self.profit_threshold_points>=exit_trades_threshold_points:
                 self.should_close_trade(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
 
             # Optional console output
             print(f"Total Profit/Loss for the day: {daily_profit_loss_per_share}")
 
-            logging.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
+            fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
             return daily_profit_loss_per_share
         except Exception as error:
-            logging.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
+            fetch_and_calculate_daily_profit_loss.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
             return 0
+
     
     async def calculate_total_profit_loss_per_share(self, sorted_orders, current_price,trading_symbol):
         """
@@ -566,7 +585,7 @@ class CandleAggregator:
 
         except Exception as error:
             logging.error(f"Error in calculate_total_profit_loss_per_share: {error}", exc_info=True)
-            return 0, 0, 0
+            return 0
 
 
 
@@ -824,7 +843,7 @@ class WebSocketHandler:
     def on_ticks(self, ws, ticks):
         # Process each tick and store candles
         try:
-            logging.info(f"Received ticks: {ticks}")
+            #logging.info(f"Received ticks: {ticks}")
             print(f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} Received ticks: {ticks}", file=open('ticks.txt', 'a'))
             current_datetime = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
             # Check if the current time is before 9 AM
@@ -835,14 +854,14 @@ class WebSocketHandler:
             for tick in ticks:
                 try:
                     instrument_token = tick['instrument_token']
-                    logging.info(f"Processing tick for instrument_token: {instrument_token}")
-                    logging.debug(f"Tick data: {tick}")
+                    #logging.info(f"Processing tick for instrument_token: {instrument_token}")
+                    #logging.debug(f"Tick data: {tick}")
 
                     if current_datetime.hour>=23:
                         print("Time More than 11 PM, Bot Will not trade further for the day")
                         continue
                     if current_datetime.hour < 9:
-                        print("Time less than 9 AM, tradeing not started yet")
+                        print("Time less than 9 AM, trading not started yet")
                         continue  # Skip the rest of the loop until it's 9:15 AM or later
 
                     # Get instrument-specific data
@@ -887,24 +906,24 @@ class WebSocketHandler:
                         )
                         print("------------------closed--------------------------------",trading_symbol,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
                         continue
-                    # if not candle_aggregator.close_trade_for_the_day and int(candle_aggregator.profit_threshold_points) and candle_aggregator.profit_threshold_points>=exit_trades_threshold_points:
-                    #     # Log details before setting the close trade flag
-                    #     logging.info(
-                    #         f"Closing trade for the day for instrument {instrument_token}. "
-                    #         f"Exit threshold points: {exit_trades_threshold_points}, "
-                    #         f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
-                    #     )
-                    #     print(
-                    #         f"datetime:{datetime.datetime.now(ZoneInfo("Asia/Kolkata"))} - Closing trade for {instrument_token} due to threshold. "
-                    #         f"Exit threshold points: {exit_trades_threshold_points}, "
-                    #         f"Profit threshold points: {candle_aggregator.profit_threshold_points}", 
-                    #         file=open('trade_close_log.txt', 'a')
-                    #     )
-                    #     candle_aggregator.close_trade_for_the_day = True
-                    #     print(" candle_aggregator.close_trade_for_the_day",candle_aggregator.close_trade_for_the_day)
-                    #     continue
 
+                    trading_symbols_list = [x['tradingsymbol'] for x in  candle_aggregator.instrument_details_dict[str(int(exit_trades_threshold_points))]]
+                    print(trading_symbols_list)
+                    if not candle_aggregator.order_active and (trading_symbol in trading_symbols_list) and not candle_aggregator.close_trade_for_the_day:
+                        # Assign the daily profit/loss to the profit threshold points
+                        candle_aggregator.profit_threshold_points = candle_aggregator.fetch_profit_loss_from_json_dict(trading_symbols_list)
+                        if candle_aggregator.profit_threshold_points>=exit_trades_threshold_points:
+                            logging.info(
+                            f"****************1234*****************************************************"
+                            f"closing trade for the day for instrument at second stage {trading_symbol}. "
+                            f"Exit threshold points: {exit_trades_threshold_points}, "
+                            f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
+                            )
+                            candle_aggregator.close_trade_for_the_day = True
                     
+                    
+                    logging.info(f"Candle aggregator found for token: {instrument_token}")
+
                     logging.info(f"Candle aggregator found for token: {instrument_token}")
                     candle_aggregator.process_tick(tick)
 
@@ -951,6 +970,16 @@ class WebSocketHandler:
                     logging.debug(f"Strategy response for token {instrument_token}: {strategy_response}")
 
 
+                    if candle_aggregator.close_trade_for_the_day:
+                        logging.info(
+                            f"------------------closed--------------------------------"
+                            f"Part 2 closed trade for the day for instrument {trading_symbol}. "
+                            f"Exit threshold points: {exit_trades_threshold_points}, "
+                            f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
+                            f"------------------****--------------------------------"
+                        )
+                        print("------------------closed--------------------------------",trading_symbol,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
+                        continue
 
                     #this will be first order placement when no order has been placed for the day, rest 
                     if strategy_response and not candle_aggregator.order_active:

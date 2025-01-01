@@ -409,6 +409,11 @@ def save_json_to_mongodb(directory="."):
                 # Delete the JSON file after successful insertion
                 os.remove(file_path)
                 print(f"File {filename} deleted txt file")
+            elif filename == "current_profit_loss.json":
+                file_path = os.path.join(directory, filename)
+                # Delete the JSON file after successful insertion
+                os.remove(file_path)
+                print(f"File {filename} deleted json file")
 
     except Exception as error:
         print("saving json data",error)
