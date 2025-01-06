@@ -662,10 +662,15 @@ class CandleAggregator:
             close_order_logger = logging.getLogger("close_trade_logger")
             close_order_logger.setLevel(logging.DEBUG)
 
-            # Create a file handler specific for reverse order handling logs
-            file_handler = logging.FileHandler("close_trade_logger.log")
-            file_handler.setLevel(logging.DEBUG)
+            # Avoid duplicate handlers
+            if not close_order_logger.handlers:
+                file_handler = logging.FileHandler("close_trade_logger.log")
+                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+                file_handler.setFormatter(formatter)
+                close_order_logger.addHandler(file_handler)
+
             if self.close_trade_for_the_day:
+                print("in should_close_trade close_trade already for",trading_symbol)
                 return True
             if not self.close_trade_for_the_day and self.profit_threshold_points and self.profit_threshold_points>=exit_trades_threshold_points and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'):            
                 close_order_logger.info(f"Threshold hit for {exit_trades_threshold_points} and {self.profit_threshold_points} and {self.profit_threshold_points>=exit_trades_threshold_points} {trading_symbol} at price: {current_price}")
@@ -896,7 +901,14 @@ class WebSocketHandler:
                     # Call the async function directly
                     #asyncio.run(candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite))
 
-                    print("candle_aggregator.close_trade_for_the_day",candle_aggregator.close_trade_for_the_day)
+                    logging.info("tsymbol:order_active:exit,current_profit,closed - %s,%s, %s, %s, %s, %s", 
+                                        str(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+                                        trading_symbol, 
+                                        candle_aggregator.order_active, 
+                                        exit_trades_threshold_points, 
+                                        candle_aggregator.profit_threshold_points, 
+                                        candle_aggregator.close_trade_for_the_day)
+
 
                     if candle_aggregator.close_trade_for_the_day:
                         logging.info(
@@ -904,7 +916,7 @@ class WebSocketHandler:
                             f"Exit threshold points: {exit_trades_threshold_points}, "
                             f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
                         )
-                        print("------------------closed--------------------------------",trading_symbol,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
+                        print("------------------closed1--------------------------------",trading_symbol,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
                         continue
 
                     trading_symbols_list = [x['tradingsymbol'] for x in  candle_aggregator.instrument_details_dict[str(int(exit_trades_threshold_points))]]
@@ -922,8 +934,6 @@ class WebSocketHandler:
                             candle_aggregator.close_trade_for_the_day = True
                     
                     
-                    logging.info(f"Candle aggregator found for token: {instrument_token}")
-
                     logging.info(f"Candle aggregator found for token: {instrument_token}")
                     candle_aggregator.process_tick(tick)
 
@@ -967,7 +977,7 @@ class WebSocketHandler:
                         continue
                     # Check strategy based on the candle data and the specific percentage
                     strategy_response = candle_aggregator.check_strategy(instrument_token, percentage)
-                    logging.debug(f"Strategy response for token {instrument_token}: {strategy_response}")
+                    #logging.debug(f"Strategy response for token {instrument_token}: {strategy_response}")
 
 
                     if candle_aggregator.close_trade_for_the_day:
