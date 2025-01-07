@@ -432,7 +432,7 @@ class CandleAggregator:
             reverse_order_logger.debug("Stop-loss condition not met. No reverse order placed.")
 
     
-    async def fetch_and_calculate_daily_profit_loss(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
+    def fetch_and_calculate_daily_profit_loss(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
         """
         Fetch orders from Kite API and calculate daily profit or loss, with extensive logging.
         """
@@ -472,7 +472,7 @@ class CandleAggregator:
             fetch_and_calculate_daily_profit_loss.debug("Sorted orders by timestamp.")
 
             # Calculate daily profit or loss based on the sorted orders
-            daily_profit_loss_per_share = await self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
+            daily_profit_loss_per_share = self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
             fetch_and_calculate_daily_profit_loss.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
             self.write_profit_loss_to_json({trading_symbol:daily_profit_loss_per_share})
 
@@ -501,7 +501,7 @@ class CandleAggregator:
             return 0
 
     
-    async def calculate_total_profit_loss_per_share(self, sorted_orders, current_price,trading_symbol):
+    def calculate_total_profit_loss_per_share(self, sorted_orders, current_price,trading_symbol):
         """
         Calculate total profit or loss per share, including realized and unrealized P/L.
         """
@@ -855,7 +855,7 @@ class WebSocketHandler:
             if  datetime.datetime.now(ZoneInfo("Asia/Kolkata")).hour < 9:
                 # Continue if the time is before 9 AM
                 return None
-
+            
             for tick in ticks:
                 try:
                     instrument_token = tick['instrument_token']
@@ -948,7 +948,7 @@ class WebSocketHandler:
                     # Check if the current price hits the stored stop loss
                     current_price = candle_aggregator.current_candle['close']
                     # Call the async function directly
-                    asyncio.run(candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, {}, lot_size, percentage))
+                    candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, {}, lot_size, percentage)
                     logging.info(f"Current price for token {instrument_token}: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}, Order Type:{candle_aggregator.current_order_type}")
                     if (candle_aggregator.order_active and
                             ((candle_aggregator.current_order_type == 'Buy' and candle_aggregator.current_stop_loss and current_price <= candle_aggregator.current_stop_loss) or
