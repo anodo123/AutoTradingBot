@@ -382,12 +382,12 @@ def save_json_to_mongodb(directory="."):
                         start_date = data[0]["start_time"].split(" ")[0]  # Extract date part only
                         
                         # Format collection name with the extracted date
-                        collection_name = start_date.replace('-', '')  # Convert to YYYYMMDD
-                        collection_name  = filename.replace("_candles.json",'_') + start_date.replace('-', '_')
-                        collection = database[collection_name]
-                        # Insert the data into the specific collection
-                        collection.insert_many(data)
-                        print(f"Data from {filename} inserted into MongoDB collection '{collection_name}'.")
+                        # collection_name = start_date.replace('-', '')  # Convert to YYYYMMDD
+                        # collection_name  = filename.replace("_candles.json",'_') + start_date.replace('-', '_')
+                        # collection = database[collection_name]
+                        # # Insert the data into the specific collection
+                        # collection.insert_many(data)
+                        # print(f"Data from {filename} inserted into MongoDB collection '{collection_name}'.")
                     
                     # Delete the JSON file after successful insertion
                     os.remove(file_path)

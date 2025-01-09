@@ -437,19 +437,19 @@ class CandleAggregator:
         Fetch orders from Kite API and calculate daily profit or loss, with extensive logging.
         """
         # Create a logger
-        fetch_and_calculate_daily_profit_loss = logging.getLogger("daily_profit_loss_calculation")
-        fetch_and_calculate_daily_profit_loss.setLevel(logging.DEBUG)
+        # fetch_and_calculate_daily_profit_loss = logging.getLogger("daily_profit_loss_calculation")
+        # fetch_and_calculate_daily_profit_loss.setLevel(logging.DEBUG)
 
-        # Create a file handler
-        file_handler = logging.FileHandler("daily_profit_loss_calculation.log")
-        file_handler.setLevel(logging.DEBUG)
+        # # Create a file handler
+        # file_handler = logging.FileHandler("daily_profit_loss_calculation.log")
+        # file_handler.setLevel(logging.DEBUG)
 
-        # Create a formatter and set it for the file handler
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
+        # # Create a formatter and set it for the file handler
+        # formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        # file_handler.setFormatter(formatter)
 
-        # Add the file handler to the logger
-        fetch_and_calculate_daily_profit_loss.addHandler(file_handler)
+        # # Add the file handler to the logger
+        # fetch_and_calculate_daily_profit_loss.addHandler(file_handler)
 
         # Log an info message
         #fetch_and_calculate_daily_profit_loss.info("Starting fetch_and_calculate_daily_profit_loss process.")
@@ -457,7 +457,7 @@ class CandleAggregator:
         try:
             # Fetch all orders
             all_orders = kite.orders()
-            fetch_and_calculate_daily_profit_loss.debug(f"Fetched {len(all_orders)} orders from Kite API.")
+            #fetch_and_calculate_daily_profit_loss.debug(f"Fetched {len(all_orders)} orders from Kite API.")
 
             # Filter for completed buy/sell orders
             completed_orders = [
@@ -465,15 +465,15 @@ class CandleAggregator:
                 order['transaction_type'] in ['BUY', 'SELL'] and 
                 order['tradingsymbol'] == trading_symbol
             ]
-            fetch_and_calculate_daily_profit_loss.debug(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
+            #fetch_and_calculate_daily_profit_loss.debug(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
 
             # Sort orders by timestamp
             sorted_orders = sorted(completed_orders, key=lambda x: x['order_timestamp'])
-            fetch_and_calculate_daily_profit_loss.debug("Sorted orders by timestamp.")
+            #fetch_and_calculate_daily_profit_loss.debug("Sorted orders by timestamp.")
 
             # Calculate daily profit or loss based on the sorted orders
             daily_profit_loss_per_share = self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
-            fetch_and_calculate_daily_profit_loss.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
+            #fetch_and_calculate_daily_profit_loss.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
             self.write_profit_loss_to_json({trading_symbol:daily_profit_loss_per_share})
 
 
@@ -487,17 +487,18 @@ class CandleAggregator:
             self.profit_threshold_points = self.fetch_profit_loss_from_json_dict(trading_symbols_list)
 
             #self.profit_threshold_points = 0 #assigned to zero for testing
-            fetch_and_calculate_daily_profit_loss.info(f"Updated profit threshold points for {trading_symbol} and  list {trading_symbols_list}: {self.profit_threshold_points}")
+            #fetch_and_calculate_daily_profit_loss.info(f"Updated profit threshold points for {trading_symbol} and  list {trading_symbols_list}: {self.profit_threshold_points}")
             if self.profit_threshold_points>=exit_trades_threshold_points:
                 self.should_close_trade(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
 
             # Optional console output
             print(f"Total Profit/Loss for the day: {daily_profit_loss_per_share}")
 
-            fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
+            #fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
             return daily_profit_loss_per_share
         except Exception as error:
-            fetch_and_calculate_daily_profit_loss.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
+            print("error in fetch_and_calculate_daily_profit_loss",error)
+            #fetch_and_calculate_daily_profit_loss.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
             return 0
 
     
