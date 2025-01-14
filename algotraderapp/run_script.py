@@ -287,7 +287,7 @@ class CandleAggregator:
 
                 f.write(f"----------------------------------------------------------------------------------------------------------------------------\n")
                 f.write(f"----------------------------------------------------------------------------------------------------------------------------\n")
-                f.write(f"Attempting {order_mode} to place order for {trading_symbol} - {order_type} {quantity} stop loss {stop_loss} price {price}.\n")
+                f.write(f"Attempting {order_mode } at {datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} to place order for {trading_symbol} - {order_type} {quantity} stop loss {stop_loss} price {price}.\n")
                 if self.close_trade_for_the_day:
                     f.write(f" Trade Closed for Attempted {order_mode} for {trading_symbol}")
                     return 
@@ -492,7 +492,7 @@ class CandleAggregator:
                 self.should_close_trade(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
 
             # Optional console output
-            print(f"Total Profit/Loss for the day: {daily_profit_loss_per_share}")
+            print(f"Total Profit/Loss for the day: {daily_profit_loss_per_share} ,self.profit_threshold_points:{self.profit_threshold_points},exit_trades_threshold_points:{exit_trades_threshold_points}")
 
             #fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
             return daily_profit_loss_per_share
@@ -578,8 +578,8 @@ class CandleAggregator:
             # Total profit or loss per share
             total_profit_loss_per_share = realized_profit_loss_per_share + unrealized_profit_loss_per_share
 
-            logging.info(f"Realized P/L per share: {realized_profit_loss_per_share}")
-            logging.info(f"Unrealized P/L per share: {unrealized_profit_loss_per_share}")
+            # logging.info(f"Realized P/L per share: {realized_profit_loss_per_share}")
+            # logging.info(f"Unrealized P/L per share: {unrealized_profit_loss_per_share}")
             logging.info(f"Total P/L per share: {total_profit_loss_per_share}")
 
             return total_profit_loss_per_share
@@ -758,7 +758,7 @@ class CandleAggregator:
                 with open(filename, 'w') as file:
                     json.dump(existing_data, file, indent=4)
 
-                logger.info(f"Profit/loss data successfully updated in {filename}.")
+                #logger.info(f"Profit/loss data successfully updated in {filename}.")
                 print(f"Profit/loss data successfully updated in {filename}.")
                 return True
             except Exception as e:
@@ -939,8 +939,8 @@ class WebSocketHandler:
                     candle_aggregator.process_tick(tick)
 
                     # Log the current candle and updated tick info
-                    logging.debug(f"Updated tick processed: {tick}")
-                    logging.debug(f"Current candle: {candle_aggregator.current_candle}")
+                    #logging.debug(f"Updated tick processed: {tick}")
+                    #logging.debug(f"Current candle: {candle_aggregator.current_candle}")
 
                     # Update trailing stop loss based on the latest tick
                     new_stop_loss = candle_aggregator.update_trailing_stop_loss(self.kite, percentage,trading_symbol)
