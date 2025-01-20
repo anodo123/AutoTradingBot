@@ -117,6 +117,8 @@ class CandleAggregator:
                     'low': last_price,
                     'close': last_price,
                     'volume': tick['last_traded_quantity'],
+                    'ohlc_high':tick['ohlc']['high'],
+                    'ohlc_low':tick['ohlc']['low'],
                     'final_save': False
                 }
             else:
@@ -131,10 +133,18 @@ class CandleAggregator:
                 if tick_time >= next_candle_start_time:
                     # Update the current candle's OHLC values before closing
                     if not self.current_candle['final_save']:
-                        self.current_candle['high'] = max(self.current_candle['high'], last_price)
-                        self.current_candle['low'] = min(self.current_candle['low'], last_price)
+                        if self.current_candle['ohlc_high']!= tick['ohlc']['high']:
+                            self.current_candle['high'] = max(self.current_candle['high'], last_price, tick['ohlc']['high'])
+                        else:
+                            self.current_candle['high'] = max(self.current_candle['high'], last_price)
+                        if self.current_candle['ohlc_low']!= tick['ohlc']['low']:
+                            self.current_candle['low'] = min(self.current_candle['low'], last_price, tick['ohlc']['low'])
+                        else:
+                            self.current_candle['low'] = min(self.current_candle['low'], last_price)
                         self.current_candle['close'] = last_price
                         self.current_candle['volume'] += tick['last_traded_quantity']
+                        self.current_candle['ohlc_high'] = tick['ohlc']['high']
+                        self.current_candle['ohlc_low'] = tick['ohlc']['low']
                         self.current_candle['final_save'] = True
                         # Save the closed candle
                         self.candles = self.save_candles(self.current_candle)
@@ -149,14 +159,24 @@ class CandleAggregator:
                         'low': last_price,
                         'close': last_price,
                         'volume': tick['last_traded_quantity'],
+                        'ohlc_high':tick['ohlc']['high'],
+                        'ohlc_low':tick['ohlc']['low'],
                         'final_save': False
                     }
                 else:
                     # Update the current candle's OHLC values and volume
-                    self.current_candle['high'] = max(self.current_candle['high'], last_price)
-                    self.current_candle['low'] = min(self.current_candle['low'], last_price)
+                    if self.current_candle['ohlc_high']!= tick['ohlc']['high']:
+                        self.current_candle['high'] = max(self.current_candle['high'], last_price, tick['ohlc']['high'])
+                    else:
+                        self.current_candle['high'] = max(self.current_candle['high'], last_price)
+                    if self.current_candle['ohlc_low']!= tick['ohlc']['low']:
+                        self.current_candle['low'] = min(self.current_candle['low'], last_price, tick['ohlc']['low'])
+                    else:
+                        self.current_candle['low'] = min(self.current_candle['low'], last_price)
                     self.current_candle['close'] = last_price
                     self.current_candle['volume'] += tick['last_traded_quantity']
+                    self.current_candle['ohlc_high'] = tick['ohlc']['high']
+                    self.current_candle['ohlc_low'] = tick['ohlc']['low']
 
                     # Save the updated candle
                     self.candles = self.save_candles(self.current_candle)
