@@ -14,4 +14,6 @@ urlpatterns = [
     path('download_all_instruments',views.download_all_instruments,name = 'download_all_instruments'),
     path('delete_added_trading_instrument',views.delete_added_trading_instrument,name = 'delete_added_trading_instrument'),
     path('callback',views.callback,name = 'callback'),
+    path('check_login_status',views.check_login_status,name = 'check_login_status'),
+    path('fetch_candle_data',views.fetch_candle_data,name = 'fetch_candle_data')
 ]

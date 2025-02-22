@@ -223,8 +223,8 @@ class CandleAggregator:
             print(f"x_value_higher: {self.x_value_higher}, x_value_lower: {self.x_value_lower}", file=log_file)
 
             # Get the current candle's high and low values
-            current_high = self.current_candle['high']
-            current_low = self.current_candle['low']
+            current_high = self.current_candle['close']
+            current_low = self.current_candle['close']
 
             print(f"Current Candle High: {current_high}, Current Candle Low: {current_low}", file=log_file)
 

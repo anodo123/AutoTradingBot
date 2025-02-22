@@ -28,6 +28,8 @@ import subprocess
 ws_handler = None
 ws_lock = threading.Lock()
 
+login_flag = False
+
 env_path = Path('./.env')
 load_dotenv(dotenv_path=env_path)
 kite = KiteConnect(api_key=os.getenv("api_key"))
@@ -61,7 +63,8 @@ def generate_session(request):
             # Temporarily setting an access token (replace with real access_token logic)
             os.environ['access_token'] =access_token
             kite.set_access_token(access_token)  # Set access token in KiteConnect
-
+            global login_flag
+            login_flag = True
             # # Step 4: Start Zerodha WebSocket in a separate thread after setting the access token
             # websocket_thread = threading.Thread(target=run_script.run_websocket(access_token))
             # websocket_thread.start()
@@ -342,12 +345,54 @@ def callback(request):
             # Temporarily setting an access token (replace with real access_token logic)
             os.environ['access_token'] =access_token
             kite.set_access_token(access_token)  # Set access token in KiteConnect
+            global login_flag
+            login_flag = True
             return JsonResponse({"access_token": access_token,"login Successfull":True})
         
         return JsonResponse({"Some Error Occurred": True}, status=500)
     except Exception as error:
         return JsonResponse({"Some Error Occurred": str(error)}, status=500)
 
+
+# check current login status
+@api_view(['GET'])    
+def check_login_status(request):
+    try:
+        return JsonResponse({"current_login_status":login_flag})
+    except Exception as error:
+        return JsonResponse({"current_login_status":False})
+
+
+@api_view(['POST'])
+def fetch_candle_data(request):
+    try:
+        # Extract parameters
+        instrument_token = request.POST.get('instrumentToken')
+        interval_minutes = request.POST.get('timeframe')
+
+        # Validate input
+        if not instrument_token or not interval_minutes:
+            return JsonResponse({"error": "instrument_token and timeframe are required"}, status=400)
+
+        # Construct the file path
+        candle_file_path = f"{instrument_token}_{interval_minutes}_minute_candles.json"
+
+        # Check if the file exists
+        if not os.path.exists(candle_file_path):
+            return JsonResponse({"file_exists": False})
+
+        # Load the JSON data from the file
+        with open(candle_file_path, 'r') as file:
+            candle_data = json.load(file)
+
+        return JsonResponse({"file_exists": True, "candle_data": candle_data})
+
+    except FileNotFoundError:
+        return JsonResponse({"error": "Candle data file not found"}, status=404)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Error decoding JSON file"}, status=500)
+    except Exception as error:
+        return JsonResponse({"error": str(error)}, status=500)
 
 
 def view_all_added_trading_instrument():
@@ -357,9 +402,7 @@ def view_all_added_trading_instrument():
         collection = database['tradeconfiguration']  # Replace 'mycollection' with your collection name
         return list(collection.find({},{"_id":0}))
     except Exception as error:
-        return []
-    
-
+        return []    
 
 def save_json_to_mongodb(directory="."):
     try:
