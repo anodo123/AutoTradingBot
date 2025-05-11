@@ -197,6 +197,7 @@ def add_trading_instrument(request):
         lot_size = request.POST['lot_size']
         instrument_token = request.POST['instrument_token']
         exit_trades_threshold_points= request.POST['exit_trades_threshold_points']
+        per_trade_exit_trades_threshold_points= request.POST['per_trade_exit_trades_threshold_points']
         trade_calculation_percentage= request.POST['trade_calculation_percentage']
         timeframe= request.POST['timeframe']
         trade_side = request.POST.get('trade_side','BOTH')
@@ -219,6 +220,7 @@ def add_trading_instrument(request):
             "lot_size":lot_size,
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
+            "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
             "instrument_details":instrument_details,
@@ -228,6 +230,7 @@ def add_trading_instrument(request):
             "lot_size":lot_size,
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
+            "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
             "instrument_details":instrument_details,
@@ -295,7 +298,7 @@ def update_trading_instrument(request):
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}/")
         data = {}
         for key,value in request.POST.items():
-            if key not in ["lot_size","instrument_token","exit_trades_threshold_points","trade_calculation_percentage","timeframe","trade_side"]:
+            if key not in ["lot_size","instrument_token","exit_trades_threshold_points","per_trade_exit_trades_threshold_points","trade_calculation_percentage","timeframe","trade_side"]:
                 return JsonResponse({"Invalid Parameter":key})
             else:
                 if key =="instrument_token":
