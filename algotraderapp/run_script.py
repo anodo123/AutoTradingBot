@@ -570,6 +570,8 @@ class CandleAggregator:
             else:
                 #if order is not both side make order inactive
                 self.order_active = False
+                self.just_closed_trade = True
+                self.keep_check_strategy = False
         else:
             reverse_order_logger.debug("Stop-loss condition not met. No reverse order placed.")
 
@@ -892,8 +894,8 @@ class CandleAggregator:
 
 
             if order_type == "Sell" and self.candles[-2]['close'] > current_vwap:
-                new_value_lower = self.candles[-2]['high']
-                new_stop_loss = math.floor(new_value_lower + (percentage / 100 * new_value_lower))
+                new_value_higher = self.candles[-2]['high']
+                new_stop_loss = math.floor(new_value_higher + (new_value_higher / 100 * new_value_higher))
                 x_value_lower = min(self.current_stop_loss,new_stop_loss)
                 if self.current_stop_loss == x_value_lower:
                     #logger.info("Trailing stop loss for BUY order is unchanged. Exiting function.")
@@ -1052,6 +1054,8 @@ class CandleAggregator:
                 )
                 #self.close_trade_for_the_day = True
                 self.just_closed_trade = True
+                self.keep_check_strategy = False
+                self.order_active = False
                 return True  # Trade should be closed
             return False  # Trade should not be closed
         except Exception as error:
