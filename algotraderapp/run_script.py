@@ -14,6 +14,9 @@ import sys
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 import json
+import math
+import logging
+from logging.handlers import RotatingFileHandler
 # Initialize Redis client using Django settings
 # redis_client = redis.StrictRedis(
 #     host=REDIS_HOST,
@@ -52,6 +55,8 @@ class CandleAggregator:
         self.last_used_vwap_candle = None
         self.cached_vwap = 0
         self.last_calculated_vwap = 0
+        self.trailing_stop_loss_json_data = None
+        self.length_of_candles_at_small_exit = None
         # Load previous candles from the file, if available
         if os.path.exists(self.file_path):
             with open(self.file_path, 'r') as file:
@@ -129,6 +134,7 @@ class CandleAggregator:
                     'volume': tick['last_traded_quantity'],
                     'ohlc_high':tick['ohlc']['high'],
                     'ohlc_low':tick['ohlc']['low'],
+                    'vwap_upto_n_minus1': 0,
                     'final_save': False
                 }
             else:
@@ -156,6 +162,7 @@ class CandleAggregator:
                         self.current_candle['ohlc_high'] = tick['ohlc']['high']
                         self.current_candle['ohlc_low'] = tick['ohlc']['low']
                         self.current_candle['final_save'] = True
+                        self.current_candle['vwap_upto_n_minus1'] = self.get_vwap_upto_n_minus_1_candles(self.candles)
                         # Save the closed candle
                         self.candles = self.save_candles(self.current_candle)
                         logging.info(f"Candle closed and saved: {self.current_candle}")
@@ -171,6 +178,7 @@ class CandleAggregator:
                         'volume': tick['last_traded_quantity'],
                         'ohlc_high':tick['ohlc']['high'],
                         'ohlc_low':tick['ohlc']['low'],
+                        'vwap_upto_n_minus1': self.get_vwap_upto_n_minus_1_candles(self.candles),
                         'final_save': False
                     }
                 else:
@@ -187,6 +195,7 @@ class CandleAggregator:
                     self.current_candle['volume'] += tick['last_traded_quantity']
                     self.current_candle['ohlc_high'] = tick['ohlc']['high']
                     self.current_candle['ohlc_low'] = tick['ohlc']['low']
+                    self.current_candle['vwap_upto_n_minus1'] = self.get_vwap_upto_n_minus_1_candles(self.candles)
 
                     # Save the updated candle
                     self.candles = self.save_candles(self.current_candle)
@@ -221,6 +230,8 @@ class CandleAggregator:
 
             # Get previous two candles
             if self.alert_candle is None:
+                return None
+            if self.keep_check_strategy is False:
                 return None
                 
             
@@ -397,6 +408,8 @@ class CandleAggregator:
         try:
             cumulative_pv = 0
             cumulative_volume = 0
+            if self.candles == [] or len(self.candles) < 2:
+                return 0
             if self.last_used_vwap_candle is not None and self.last_used_vwap_candle == candles[-2]:
                 return self.last_calculated_vwap
             if self.last_used_vwap_candle is None:
@@ -570,8 +583,8 @@ class CandleAggregator:
             else:
                 #if order is not both side make order inactive
                 self.order_active = False
-                self.just_closed_trade = True
-                self.keep_check_strategy = False
+                self.alert_candle = None
+                self.current_order_type = None
         else:
             reverse_order_logger.debug("Stop-loss condition not met. No reverse order placed.")
 
@@ -653,6 +666,7 @@ class CandleAggregator:
         
         try:
             # Fetch all orders
+            per_trade_profit_loss_per_share = 0
             all_orders = kite.orders()
             #fetch_and_calculate_daily_profit_loss.debug(f"Fetched {len(all_orders)} orders from Kite API.")
 
@@ -660,22 +674,26 @@ class CandleAggregator:
             completed_orders = [
                 order for order in all_orders if order['status'] == 'COMPLETE' and
                 order['transaction_type'] in ['BUY', 'SELL'] and 
-                order['tradingsymbol'] == trading_symbol and
-                order['order_id'] == order_id
+                order['tradingsymbol'] == trading_symbol
             ]
 
             # Sort orders by timestamp
             sorted_orders = sorted(completed_orders, key=lambda x: x['order_timestamp'])
             #fetch_and_calculate_daily_profit_loss.debug("Sorted orders by timestamp.")
-            per_trade_profit_loss_per_share = self.calculate_total_profit_loss_per_instrument_per_order(sorted_orders, current_price,trading_symbol,order_id)
+            if self.order_active:
+                per_trade_profit_loss_per_share = self.calculate_total_profit_loss_per_instrument_per_order(sorted_orders, current_price,trading_symbol,order_id)
             # Calculate daily profit or loss based on the sorted orders
             
+            
+            
             #fetch_and_calculate_daily_profit_loss.info(f"Updated profit threshold points for {trading_symbol} and  list {trading_symbols_list}: {self.profit_threshold_points}")
-            if per_trade_profit_loss_per_share>=per_instrument_exit_trades_threshold_points and self.current_order_type is not None:
+            if per_trade_profit_loss_per_share and per_trade_profit_loss_per_share>=per_instrument_exit_trades_threshold_points and self.order_active:
                 self.exit_trade_for_the_instrument(kite,current_price,instrument_token, trading_symbol, exchange, per_instrument_exit_trades_threshold_points,
                                       strategy_response, lot_size, percentage,per_trade_profit_loss_per_share)
             # Optional console output
-            print(f"Total Profit/Loss for the day: {per_trade_profit_loss_per_share} ,self.profit_threshold_points:{self.profit_threshold_points},per_ins_exit_trades_threshold_points:{per_instrument_exit_trades_threshold_points}")
+            print(f"PER TRADE PROFIT LOSS -->{per_trade_profit_loss_per_share},per_ins_exit_trades_threshold_points:{per_instrument_exit_trades_threshold_points}")
+            print(f"PER TRADE PROFIT LOSS -->{per_trade_profit_loss_per_share},per_ins_exit_trades_threshold_points:{per_instrument_exit_trades_threshold_points}")
+            print(f"PER TRADE PROFIT LOSS -->{per_trade_profit_loss_per_share},per_ins_exit_trades_threshold_points:{per_instrument_exit_trades_threshold_points}")
 
             #fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
             return per_trade_profit_loss_per_share
@@ -801,8 +819,8 @@ class CandleAggregator:
                 transaction_type = order['transaction_type']
                 
                 # Process only the specific order
-                if order['order_id'] != order_id:
-                    continue
+                # if order['order_id'] != order_id:
+                #     continue
 
                 if transaction_type == 'BUY':
                     if not self.open_position:
@@ -846,7 +864,7 @@ class CandleAggregator:
                     unrealized_profit_loss_per_share = (self.open_price - current_price)
 
             # Total profit or loss per share for the specific order
-            total_profit_loss_per_share = realized_profit_loss_per_share + unrealized_profit_loss_per_share
+            total_profit_loss_per_share = unrealized_profit_loss_per_share
 
             logging.info(f"Total P/L for order {order_id}: {total_profit_loss_per_share}")
 
@@ -856,55 +874,63 @@ class CandleAggregator:
             logging.error(f"Error in calculate_total_profit_loss_per_share: {error}", exc_info=True)
             return 0
 
-
-
-    def update_trailing_stop_loss(self, kite, percentage,tradingsymbol):
-        """ Update trailing stop loss for open orders based on the latest candle values. """
+    def update_trailing_stop_loss(self, kite, percentage, tradingsymbol):
+        """Update trailing stop loss and persist to JSON with timestamp if it changes."""
+        print("*****************************************")
+        print("in update_trailing_stop_loss function")
+        print("*****************************************")
+        print("in update_trailing_stop_loss function")
         try:
-            # Set up logging with a FileHandler
-            logger = logging.getLogger("trailing_stop_loss")
-            logger.setLevel(logging.INFO)
+            # Lazy-load the JSON data into memory if it's None
+            if self.trailing_stop_loss_json_data is None:
+                file_path = "trailing_stop_loss.json"
+                if os.path.exists(file_path):
+                    try:
+                        with open(file_path, "r") as file:
+                            self.trailing_stop_loss_json_data = json.load(file)
+                    except json.JSONDecodeError:
+                        self.trailing_stop_loss_json_data = {}
+                else:
+                    self.trailing_stop_loss_json_data = {}
 
-            # Avoid duplicate handlers
-            if not logger.handlers:
-                file_handler = logging.FileHandler("trailing_stop_loss_updates.log")
-                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-                file_handler.setFormatter(formatter)
-                logger.addHandler(file_handler)
-
-            # Check for minimum candles
             if len(self.candles) < 2:
-                #logger.info("Insufficient candle data (less than 3 candles). Exiting function.")
                 return
 
             order_type = self.current_order_type
-            
             current_vwap = self.get_vwap_upto_n_minus_1_candles(self.candles)
+            updated = False
 
-             # Calculate new trailing stop loss
             if order_type == "Buy" and self.candles[-2]['close'] < current_vwap:
-                new_value_lower = self.candles[-2]['low']
-                new_stop_loss = math.floor(new_value_lower - (percentage / 100 * new_value_lower))
-                x_value_higher = max(self.current_stop_loss,new_stop_loss)
-                if self.current_stop_loss == x_value_higher:
-                    #logger.info("Trailing stop loss for BUY order is unchanged. Exiting function.")
-                    return
-                logger.info(f"Updated trailing stop loss for BUY order of {tradingsymbol} to {x_value_higher}")
-                self.current_stop_loss = x_value_higher
+                new_value = self.candles[-2]['low']
+                new_stop_loss = math.floor(new_value - (percentage / 100 * new_value))
+                if new_stop_loss > self.current_stop_loss:
+                    self.current_stop_loss = new_stop_loss
+                    updated = True
 
+            elif order_type == "Sell" and self.candles[-2]['close'] > current_vwap:
+                new_value = self.candles[-2]['high']
+                new_stop_loss = math.floor(new_value + (percentage / 100 * new_value))
+                if new_stop_loss < self.current_stop_loss:
+                    self.current_stop_loss = new_stop_loss
+                    updated = True
 
-            if order_type == "Sell" and self.candles[-2]['close'] > current_vwap:
-                new_value_higher = self.candles[-2]['high']
-                new_stop_loss = math.floor(new_value_higher + (new_value_higher / 100 * new_value_higher))
-                x_value_lower = min(self.current_stop_loss,new_stop_loss)
-                if self.current_stop_loss == x_value_lower:
-                    #logger.info("Trailing stop loss for BUY order is unchanged. Exiting function.")
-                    return
-                logger.info(f"Updated trailing stop loss for SELL order of {tradingsymbol} to {x_value_lower}")
-                self.current_stop_loss = x_value_lower
-                
+            if updated:
+                old_value = self.trailing_stop_loss_json_data.get(tradingsymbol)
+                if old_value != self.current_stop_loss:
+                    self.trailing_stop_loss_json_data[tradingsymbol] = self.current_stop_loss
+                    self.trailing_stop_loss_json_data[tradingsymbol + "_update_time"] = str(datetime.datetime.now(ZoneInfo('Asia/Kolkata')))
+                    with open("trailing_stop_loss.json", "w") as file:
+                        json.dump(self.trailing_stop_loss_json_data, file, indent=4)
+                        
         except Exception as error:
-            logger.exception(f"Error in update_trailing_stop_loss for {tradingsymbol}: {error}")
+            print(f"Error in update_trailing_stop_loss for {tradingsymbol}: {error}")
+            print("*****************************************")
+            print("Error in update_trailing_stop_loss function")
+            print("*****************************************")
+            print(" ERROR in update_trailing_stop_loss function")
+
+
+
 
 
     def should_close_trade(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
@@ -998,7 +1024,7 @@ class CandleAggregator:
             # Set up a dedicated logger for this function
             close_order_logger = logging.getLogger("close_trade_logger")
             close_order_logger.setLevel(logging.DEBUG)
-
+            reverse_order_id_sq_off = None
             # Avoid duplicate handlers
             if not close_order_logger.handlers:
                 file_handler = logging.FileHandler("close_trade_logger.log")
@@ -1053,9 +1079,13 @@ class CandleAggregator:
                     f"Per Trade Profit threshold points: {per_trade_profit_loss_per_share}"
                 )
                 #self.close_trade_for_the_day = True
-                self.just_closed_trade = True
-                self.keep_check_strategy = False
-                self.order_active = False
+                if reverse_order_id_sq_off:
+                    self.just_closed_trade = True
+                    self.keep_check_strategy = False
+                    self.order_active = False
+                    self.alert_candle = None
+                    self.length_of_candles_at_small_exit = len(self.candles)
+                    self.current_order_type = None
                 return True  # Trade should be closed
             return False  # Trade should not be closed
         except Exception as error:
@@ -1070,46 +1100,30 @@ class CandleAggregator:
         :param filename: The name of the JSON file to write to (default: profit_loss.json)
         """
         try:
-            # Set up logging with a FileHandler
-            logger = logging.getLogger("trailing_stop_loss")
-            logger.setLevel(logging.INFO)
-
-            # Avoid duplicate handlers
-            if not logger.handlers:
-                file_handler = logging.FileHandler("trailing_stop_loss_updates.log")
-                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-                file_handler.setFormatter(formatter)
-                logger.addHandler(file_handler)
-
+            # Read existing data from the file if it exists
             try:
-                # Read existing data from the file if it exists
-                try:
-                    with open(filename, 'r') as file:
-                        existing_data = json.load(file)
-                except FileNotFoundError:
-                    # Create the file with an empty dictionary if it doesn't exist
-                    with open(filename, 'w') as file:
-                        json.dump({}, file)
-                    existing_data = {}
-
-                # Update the existing data with the new profit/loss data
-                existing_data.update(profit_loss_data)
-
-                # Write the updated data back to the file
+                with open(filename, 'r') as file:
+                    existing_data = json.load(file)
+            except FileNotFoundError:
+                # Create the file with an empty dictionary if it doesn't exist
                 with open(filename, 'w') as file:
-                    json.dump(existing_data, file, indent=4)
+                    json.dump({}, file)
+                existing_data = {}
 
-                #logger.info(f"Profit/loss data successfully updated in {filename}.")
-                print(f"Profit/loss data successfully updated in {filename}.")
-                return True
-            except Exception as e:
-                logger.error(f"An error occurred while updating the file: {e}")
-                print(f"An error occurred while updating the file: {e}")
-                return False
+            # Update the existing data with the new profit/loss data
+            existing_data.update(profit_loss_data)
+
+            # Write the updated data back to the file
+            with open(filename, 'w') as file:
+                json.dump(existing_data, file, indent=4)
+
+            #logger.info(f"Profit/loss data successfully updated in {filename}.")
+            print(f"Profit/loss data successfully updated in {filename}.")
+            return True
         except Exception as e:
-            logger.error(f"An error occurred while updating the file: {e}")
             print(f"An error occurred while updating the file: {e}")
             return False
+
     def fetch_profit_loss_from_json_dict(self,keys, filename="current_profit_loss.json"):
         """
         Fetches profit or loss values for one or more keys from a JSON file.
@@ -1133,42 +1147,61 @@ class CandleAggregator:
             print(f"An error occurred while reading the file: {e}")
             return 0
         
+
     def check_re_entry_eligibility(self):
         """
-        Check if the instrument is eligible for re-entry based on vwap.
+        Check if the instrument is eligible for re-entry based on VWAP.
+        Logs the decision and rotates logs to prevent overflow.
         """
-        try:
-            just_closed_trade = self.just_closed_trade
-            # Set up a dedicated logger for this function
-            re_entry_logger = logging.getLogger("re_entry_logger")
-            re_entry_logger.setLevel(logging.DEBUG)
+        # Setup logger (only once)
+        if not hasattr(self, "re_entry_logger"):
+            self.re_entry_logger = logging.getLogger("re_entry_logger")
+            self.re_entry_logger.setLevel(logging.DEBUG)
 
-            # Create a file handler specific for re-entry checks
-            file_handler = logging.FileHandler("re_entry.log")
-            file_handler.setLevel(logging.DEBUG)
-
-            # Define a log format and set it for the handler
+            handler = RotatingFileHandler(
+                "re_entry.log",
+                maxBytes=5 * 1024 * 1024,  # 5 MB
+                backupCount=3              # Keep 3 rotated files
+            )
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            file_handler.setFormatter(formatter)
+            handler.setFormatter(formatter)
 
-            # Add the handler to the logger, avoiding duplicate handlers if the function is called multiple times
-            if not re_entry_logger.handlers:
-                re_entry_logger.addHandler(file_handler)
+            if not self.re_entry_logger.handlers:
+                self.re_entry_logger.addHandler(handler)
 
-            # Check if the instrument is eligible for re-entry
+        try:
             if not self.just_closed_trade:
-                return True,False
-            
+                print("No recent trade closed, eligible for entry.")
+                return True, False
+
             current_vwap = self.get_vwap_upto_n_minus_1_candles(self.candles)
-            
-            if self.trade_side in ["BUY"] and self.candles[-2]['close']<current_vwap:
-                return True,False
-            if self.trade_side in ["SELL"] and self.candles[-2]['close']>current_vwap:
-                return True,False
-            return False,False
+            last_close = self.candles[-2]['close']
+
+            if self.trade_side == "BUY":
+                if last_close < current_vwap and self.length_of_candles_at_small_exit and self.length_of_candles_at_small_exit<len(self.candles):
+                    self.re_entry_logger.info(f"BUY re-entry allowed: Close={last_close} < VWAP={current_vwap}")
+                    return True, False
+                else:
+                    self.re_entry_logger.info(f"BUY re-entry blocked: Close={last_close} >= VWAP={current_vwap}")
+                    self.alert_candle = None
+                    return False, True
+
+            elif self.trade_side == "SELL":
+                if last_close > current_vwap and self.length_of_candles_at_small_exit and self.length_of_candles_at_small_exit<len(self.candles):
+                    self.re_entry_logger.info(f"SELL re-entry allowed: Close={last_close} > VWAP={current_vwap}")
+                    return True, False
+                else:
+                    self.re_entry_logger.info(f"SELL re-entry blocked: Close={last_close} <= VWAP={current_vwap}")
+                    self.alert_candle = None
+                    return False, True
+
+            self.re_entry_logger.warning("Unknown trade side; defaulting to not eligible.")
+            return False, True
+
         except Exception as e:
-            re_entry_logger.error(f"Error in check_re_entry_eligibility: {e}")
-            return True,False
+            self.re_entry_logger.error(f"Error in check_re_entry_eligibility: {e}")
+            return True, False
+
         
         
         
@@ -1266,7 +1299,7 @@ class WebSocketHandler:
                     exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'])
                     per_trade_exit_trades_threshold_points = float(instrument_data['per_trade_exit_trades_threshold_points'])
 
-                    if exchange in ['NFO','NSE','BSE'] and current_datetime.hour>=15:
+                    if exchange in ['NFO','NSE','BSE'] and current_datetime.hour>=16:
                         print("Time More than 3 PM for equity, Bot Will not trade further for the day")
                         continue
 
@@ -1370,7 +1403,7 @@ class WebSocketHandler:
                     if candle_aggregator.just_closed_trade:
                         candle_aggregator.keep_check_strategy,candle_aggregator.just_closed_trade = candle_aggregator.check_re_entry_eligibility()
                     # Check strategy based on the candle data and the specific percentage
-                    if not candle_aggregator.keep_check_strategy:
+                    if candle_aggregator.keep_check_strategy == False:
                         candle_aggregator.alert_candle = None
                         print("--------Inelgibile For ReEntry--------------------")
                     strategy_response = candle_aggregator.check_strategy(instrument_token, percentage)
