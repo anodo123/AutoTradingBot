@@ -565,9 +565,7 @@ class CandleAggregator:
                                       strategy_response, lot_size, percentage,per_trade_profit_loss_per_share)
             # Optional console output
             print(f"PER TRADE PROFIT LOSS -->{per_trade_profit_loss_per_share},per_ins_exit_trades_threshold_points:{per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)}")
-            print(f"PER TRADE PROFIT LOSS -->{per_trade_profit_loss_per_share},per_ins_exit_trades_threshold_points:{per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)}")
-            print(f"PER TRADE PROFIT LOSS -->{per_trade_profit_loss_per_share},per_ins_exit_trades_threshold_points:{per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)}")
-
+            
             #fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
             return per_trade_profit_loss_per_share
         except Exception as error:
@@ -1180,17 +1178,16 @@ class WebSocketHandler:
                     logging.info(f"Candle aggregator found for token: {instrument_token}")
                     candle_aggregator.process_tick(tick)
                     
-                    if candle_aggregator.just_closed_trade and candle_aggregator.just_closed_trade_last_candle and \
-                        candle_aggregator.just_closed_trade_last_candle and candle_aggregator.candles[-2] == candle_aggregator.just_closed_trade_last_candle:
-                        logging.info(f"Just closed trade for token {trading_symbol} at candle inelgible for further processing, skipping.")
-                        continue  # Skip further processing for this tick if the last candle is the same as the just closed trade candle
-                    if candle_aggregator.just_closed_trade and candle_aggregator.just_closed_trade_last_candle and \
-                        candle_aggregator.just_closed_trade_last_candle and candle_aggregator.candles[-2] == candle_aggregator.just_closed_trade_last_candle:
-                        logging.info(f"Just Activated trade for token {trading_symbol} at candle, now Eligible for further processing")
-                        logging.info(f"Just Activated trade for token {trading_symbol} at candle, now Eligible for further processing")
-                        logging.info(f"Just Activated trade for token {trading_symbol} at candle, now Eligible for further processing")
-                        candle_aggregator.just_closed_trade = False
-                        candle_aggregator.just_closed_trade_last_candle = None
+                    if candle_aggregator.just_closed_trade and candle_aggregator.just_closed_trade_last_candle:
+                        if candle_aggregator.candles[-2] == candle_aggregator.just_closed_trade_last_candle:
+                            logging.info(f"Just closed trade for token {trading_symbol} at candle ineligible for further processing, skipping.")
+                            continue
+                        else:
+                            logging.info(f"Just Activated trade for token {trading_symbol} at candle, now Eligible for further processing")
+                            print(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - Just Activated trade for token {trading_symbol} at candle, now Eligible for further processing", file=open("eligibility.log", "a"))
+                            candle_aggregator.just_closed_trade = False
+                            candle_aggregator.just_closed_trade_last_candle = None
+
                         
                         
                     # Log the current candle and updated tick info
@@ -1207,9 +1204,7 @@ class WebSocketHandler:
                     #smallprofitbaseperinstrumentexit
                     candle_aggregator.fetch_and_calculate_per_trade_per_instrument_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, per_trade_exit_trades_threshold_points, {}, lot_size, percentage,candle_aggregator.order_id)
                     if candle_aggregator.just_closed_trade:
-                        logging.info(f"Just closed trade for token {trading_symbol} at candle, now Eligible for further processing")
-                        logging.info(f"Just closed trade for token {trading_symbol} at candle, now Eligible for further processing")
-                        logging.info(f"Just closed trade for token {trading_symbol} at candle, now Eligible for further processing")
+                        logging.info(f"Just closed trade for token {trading_symbol} at candle, ntt Eligible for further processing")
                         continue
                     candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, {}, lot_size, percentage)
                     logging.info(f"Current price for token {instrument_token}: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}, Order Type:{candle_aggregator.current_order_type}")
