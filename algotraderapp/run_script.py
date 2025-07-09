@@ -1114,7 +1114,8 @@ class CandleAggregator:
                     self.sell_alert_candle = None
                     self.length_of_candles_at_small_exit = len(self.candles)
                     self.current_order_type = None
-                    self.per_trade_exit_candle_start_time = datetime.datetime.now(ZoneInfo('Asia/Kolkata'))
+                    # Correct way to parse a datetime string
+                    self.per_trade_exit_candle_start_time = datetime.datetime.strptime(self.candles[-1]['start_time'], "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo('Asia/Kolkata'))
                     
                 return True  # Trade should be closed
             return False  # Trade should not be closed
