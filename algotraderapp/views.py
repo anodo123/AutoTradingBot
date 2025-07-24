@@ -366,6 +366,16 @@ def check_login_status(request):
         return JsonResponse({"current_login_status":False})
 
 
+def get_backup_files(instrument_token, interval_minutes):
+    prefix = f"{instrument_token}_{interval_minutes}_minute_candles_backup"
+    directory = os.getcwd()
+
+    return [
+        os.path.join(directory, f)
+        for f in os.listdir(directory)
+        if f.startswith(prefix) and f.endswith('.json') and os.path.isfile(os.path.join(directory, f))
+    ]
+
 @api_view(['POST'])
 def fetch_candle_data(request):
     try:
@@ -384,11 +394,34 @@ def fetch_candle_data(request):
         if not os.path.exists(candle_file_path):
             return JsonResponse({"file_exists": False})
 
-        # Load the JSON data from the file
+        # Load the main candle file
         with open(candle_file_path, 'r') as file:
             candle_data = json.load(file)
 
-        return JsonResponse({"file_exists": True, "candle_data": candle_data})
+        # Get all matching backup file paths
+        backup_file_paths = get_backup_files(instrument_token, interval_minutes)
+
+        # Load data from all backup files
+        backup_data = []
+        for path in backup_file_paths:
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                    backup_data.append({
+                        "filename": os.path.basename(path),
+                        "data": data
+                    })
+            except Exception as e:
+                backup_data.append({
+                    "filename": os.path.basename(path),
+                    "error": f"Could not read: {str(e)}"
+                })
+
+        return JsonResponse({
+            "file_exists": True,
+            "candle_data": candle_data,
+            "backups": backup_data
+        })
 
     except FileNotFoundError:
         return JsonResponse({"error": "Candle data file not found"}, status=404)
@@ -396,7 +429,6 @@ def fetch_candle_data(request):
         return JsonResponse({"error": "Error decoding JSON file"}, status=500)
     except Exception as error:
         return JsonResponse({"error": str(error)}, status=500)
-
 
 def view_all_added_trading_instrument():
     try:
