@@ -246,7 +246,7 @@ class CandleAggregator:
                 print(f"Checking strategy for instrument_token: {instrument_token}, percentage: {percentage}", file=log_file)
 
                 # Check if there are enough candles
-                if len(self.candles) < 2:
+                if len(self.candles) < 1:
                     print(f"Not enough candles. Candles count: {len(self.candles)}", file=log_file)
                     return None  # Not enough candles to make a decision
                 
