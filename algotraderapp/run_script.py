@@ -107,7 +107,7 @@ class CandleAggregator:
         except Exception as error:
             logging.error(f"error {error}")
             return []
-            
+        
     def reset_candles(self):
         try:
             if os.path.exists(self.file_path):
@@ -246,7 +246,7 @@ class CandleAggregator:
                 print(f"Checking strategy for instrument_token: {instrument_token}, percentage: {percentage}", file=log_file)
 
                 # Check if there are enough candles
-                if len(self.candles) < 1:
+                if len(self.candles) < 2:
                     print(f"Not enough candles. Candles count: {len(self.candles)}", file=log_file)
                     return None  # Not enough candles to make a decision
                 
@@ -375,13 +375,13 @@ class CandleAggregator:
     def check_alert_candle_and_its_validity_for_buy_side(self):
         try:
             current_vwap = self.get_vwap_upto_n_minus_1_candles(self.candles)
-            last_close = self.candles[-1]['close']
-            start_time = self.candles[-1]['start_time']
+            last_close = self.candles[-2]['close']
+            start_time = self.candles[-2]['start_time']
 
-            if self.buy_alert_candle is None and last_close > current_vwap and current_vwap:
+            if self.buy_alert_candle is None and last_close > current_vwap:
                 #self.alert_candle = self.candles[-2]
-                self.buy_alert_candle = self.candles[-1]
-            elif self.buy_alert_candle and last_close < current_vwap and current_vwap:
+                self.buy_alert_candle = self.candles[-2]
+            elif self.buy_alert_candle and last_close < current_vwap:
                 self.buy_alert_candle = None
                 self.alert_candle = None
                 
@@ -419,13 +419,13 @@ class CandleAggregator:
     def check_alert_candle_and_its_validity_for_sell_side(self):
         try:
             current_vwap = self.get_vwap_upto_n_minus_1_candles(self.candles)
-            last_close = self.candles[-1]['close']
-            start_time = self.candles[-1]['start_time']
+            last_close = self.candles[-2]['close']
+            start_time = self.candles[-2]['start_time']
 
-            if self.sell_alert_candle is None and current_vwap > last_close and current_vwap:
+            if self.sell_alert_candle is None and current_vwap > last_close:
                 #self.alert_candle = self.candles[-2]
-                self.sell_alert_candle = self.candles[-1]
-            elif self.sell_alert_candle and current_vwap < last_close and current_vwap:
+                self.sell_alert_candle = self.candles[-2]
+            elif self.sell_alert_candle and current_vwap < last_close:
                 self.sell_alert_candle = None
                 self.alert_candle = None
 
@@ -468,14 +468,14 @@ class CandleAggregator:
         try:
             cumulative_pv = 0
             cumulative_volume = 0
-            if self.candles == []:
+            if self.candles == [] or len(self.candles) < 2:
                 return 0
-            # if self.last_used_vwap_candle is not None and self.last_used_vwap_candle == candles[-1]:
-            #     return self.last_calculated_vwap
-            # if self.last_used_vwap_candle is None:
-            #     self.last_used_vwap_candle = candles[-1]
+            if self.last_used_vwap_candle is not None and self.last_used_vwap_candle == candles[-2]:
+                return self.last_calculated_vwap
+            if self.last_used_vwap_candle is None:
+                self.last_used_vwap_candle = candles[-2]
             # Loop in reverse, excluding the most recent (last) candle
-            for i in range(len(candles) - 1, -1, -1):  # Exclude last candle
+            for i in range(len(candles) - 2, -1, -1):  # Exclude last candle
                 candle = candles[i]
                 typical_price = (candle['high'] + candle['low'] + candle['close']) / 3
                 volume = candle['volume']
@@ -484,7 +484,7 @@ class CandleAggregator:
 
             if cumulative_volume == 0:
                 return 0  # Avoid division by zero
-            self.last_calculated_vwap = round(cumulative_pv / cumulative_volume,2)
+            self.last_calculated_vwap = cumulative_pv / cumulative_volume
             return self.last_calculated_vwap
         except Exception as e:
             print(f"Error in get_vwap_upto_n_minus_1_candles: {e}")
@@ -939,15 +939,15 @@ class CandleAggregator:
             current_vwap = self.get_vwap_upto_n_minus_1_candles(self.candles)
             updated = False
 
-            if order_type == "Buy" and self.candles[-1]['close'] < current_vwap:
-                new_value = self.candles[-1]['low']
+            if order_type == "Buy" and self.candles[-2]['close'] < current_vwap:
+                new_value = self.candles[-2]['low']
                 new_stop_loss = math.floor(new_value - (percentage / 100 * new_value))
                 if new_stop_loss > self.current_stop_loss:
                     self.current_stop_loss = new_stop_loss
                     updated = True
 
-            elif order_type == "Sell" and self.candles[-1]['close'] > current_vwap:
-                new_value = self.candles[-1]['high']
+            elif order_type == "Sell" and self.candles[-2]['close'] > current_vwap:
+                new_value = self.candles[-2]['high']
                 new_stop_loss = math.ceil(new_value + (percentage / 100 * new_value))
                 if new_stop_loss < self.current_stop_loss:
                     self.current_stop_loss = new_stop_loss
@@ -1219,7 +1219,7 @@ class CandleAggregator:
                 return True, False
 
             current_vwap = self.get_vwap_upto_n_minus_1_candles(self.candles)
-            last_close = self.candles[-1]['close']
+            last_close = self.candles[-2]['close']
 
             # if self.trade_side == "BUY":
             #     if last_close < current_vwap and self.length_of_candles_at_small_exit and self.length_of_candles_at_small_exit<len(self.candles):
