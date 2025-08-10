@@ -291,7 +291,7 @@ class CandleAggregator:
                 # Check for Buy or Sell signals and calculate stop loss
                 if self.buy_alert_candle and  current_high > math.ceil(self.buy_alert_candle['high'] + ((percentage / 100) * self.buy_alert_candle['high'])):
                     self.alert_candle = self.buy_alert_candle
-                    self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
+                    #self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
                     stop_loss = self.calculate_stop_loss_func("Buy", percentage,self.buy_alert_candle)
                     response = {
                         "instrument_token": instrument_token,
@@ -301,7 +301,7 @@ class CandleAggregator:
                     print(f"Buy signal generated. Stop Loss: {stop_loss}", file=log_file)
                 elif self.sell_alert_candle and  current_low < math.ceil(self.sell_alert_candle['low'] - ((percentage / 100) * self.sell_alert_candle['low'])):
                     self.alert_candle = self.sell_alert_candle
-                    self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
+                    #self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
                     stop_loss = self.calculate_stop_loss_func("Sell", percentage,self.sell_alert_candle)
                     response = {
                         "instrument_token": instrument_token,
@@ -540,6 +540,7 @@ class CandleAggregator:
                         self.current_stop_loss = stop_loss
                         # Update the current stop loss in the object for the new reverse order
                         self.order_active = True
+                        self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
                         f.write(f"{order_type} {order_mode} order placed for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
                         # Fetch all orders
                     else:
@@ -547,6 +548,7 @@ class CandleAggregator:
                         self.current_stop_loss = None
                         # Update the current stop loss in the object for the new reverse order
                         self.order_active = False
+                        self.per_trade_candle_based_profit = 1
                         f.write(f"{order_type} {order_mode} order NOT placed REJECTED for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
                         sys.exit()
                 f.write(f"Order placed successfully for {trading_symbol}. Order ID: {order_id}\n")
@@ -921,6 +923,9 @@ class CandleAggregator:
     def update_trailing_stop_loss(self, kite, percentage, tradingsymbol):
         """Update trailing stop loss and persist to JSON with timestamp if it changes."""
         try:
+            if self.current_stop_loss:
+                return self.current_stop_loss
+            return 
             # Lazy-load the JSON data into memory if it's None
             if self.trailing_stop_loss_json_data is None:
                 file_path = "trailing_stop_loss.json"
@@ -1469,7 +1474,7 @@ class WebSocketHandler:
 
                     # Update trailing stop loss based on the latest tick
                     new_stop_loss = candle_aggregator.update_trailing_stop_loss(self.kite, percentage,trading_symbol)
-                    logging.info(f"Updated trailing stop loss for token {instrument_token}: {new_stop_loss}")
+                    #logging.info(f"Updated trailing stop loss for token {instrument_token}: {new_stop_loss}")
 
                     # Check if the current price hits the stored stop loss
 
