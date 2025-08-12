@@ -540,7 +540,10 @@ class CandleAggregator:
                         self.current_stop_loss = stop_loss
                         # Update the current stop loss in the object for the new reverse order
                         self.order_active = True
-                        self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
+                        if self.alert_candle:
+                            self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
+                        else:
+                            self.per_trade_candle_based_profit = 1
                         f.write(f"{order_type} {order_mode} order placed for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
                         # Fetch all orders
                     else:
@@ -550,7 +553,7 @@ class CandleAggregator:
                         self.order_active = False
                         self.per_trade_candle_based_profit = 1
                         f.write(f"{order_type} {order_mode} order NOT placed REJECTED for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
-                        sys.exit()
+                        #sys.exit()
                 f.write(f"Order placed successfully for {trading_symbol}. Order ID: {order_id}\n")
                 self.order_id = order_id
                 return order_id
@@ -650,9 +653,9 @@ class CandleAggregator:
             #else:
                 #if order is not both side make order inactive
             self.order_active = False
-            self.alert_candle = None
-            self.buy_alert_candle = None
-            self.sell_alert_candle = None
+            # self.alert_candle = None
+            # self.buy_alert_candle = None
+            # self.sell_alert_candle = None
             self.current_order_type = None
         else:
             reverse_order_logger.debug("Stop-loss condition not met. No reverse order placed.")
