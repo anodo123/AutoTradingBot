@@ -585,7 +585,9 @@ class CandleAggregator:
                             self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
                         else:
                             self.per_trade_candle_based_profit = 1
-                        f.write(f"{order_type} {order_mode} order placed for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
+                        f.write(f"{order_type} {order_mode} order placed for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price} alert_candle_based_profit_points_unmul: {self.per_trade_candle_based_profit}\n")
+                        f.write("**********")
+                        f.write(f"alert_candle: {self.alert_candle}\n")
                         # Fetch all orders
                     else:
                         self.current_order_type = None
@@ -593,7 +595,8 @@ class CandleAggregator:
                         # Update the current stop loss in the object for the new reverse order
                         self.order_active = False
                         self.per_trade_candle_based_profit = 1
-                        f.write(f"{order_type} {order_mode} order NOT placed REJECTED for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
+                        f.write(f"{order_type} {order_mode} order NOT placed REJECTED for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price} alert_candle_based_profit_points_unmul: {self.per_trade_candle_based_profit}\n")
+                        f.write("**********")
                         #sys.exit()
                 f.write(f"Order placed successfully for {trading_symbol}. Order ID: {order_id}\n")
                 self.order_id = order_id
@@ -694,7 +697,7 @@ class CandleAggregator:
             #else:
                 #if order is not both side make order inactive
             self.order_active = False
-            self.alert_candle = None
+            #self.alert_candle = None
             # self.buy_alert_candle = None
             # self.sell_alert_candle = None
             self.current_order_type = None
@@ -1125,9 +1128,15 @@ class CandleAggregator:
                 return True
             if not self.close_trade_for_the_day and per_trade_profit_loss_per_share and\
                 per_trade_profit_loss_per_share>=(per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)) and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'):            
-                close_order_logger.info(f"Threshold hit for {per_instrument_exit_trades_threshold_points} and\
-                    {per_trade_profit_loss_per_share} and \
-                        {per_trade_profit_loss_per_share>=per_instrument_exit_trades_threshold_points} {trading_symbol} at price: {current_price}")
+                close_order_logger.info(
+                    "Per Instrument Threshold hit | Threshold: %.2f | P/L per share: %.2f | Condition: %s | Symbol: %s | Price: %.2f",
+                    per_instrument_exit_trades_threshold_points * self.per_trade_candle_based_profit,
+                    per_trade_profit_loss_per_share,
+                    per_trade_profit_loss_per_share >= (per_instrument_exit_trades_threshold_points * self.per_trade_candle_based_profit),
+                    trading_symbol,
+                    current_price
+                )
+
 
                 # Calculate daily profit or loss before reversing the order
                 #self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
@@ -1161,11 +1170,14 @@ class CandleAggregator:
                                             f"Per Trade Profit threshold points: {per_trade_profit_loss_per_share}"
                                         )
                 logging.info(
-                    f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} - Closing trade for {trading_symbol} due to threshold."
-                    f"exiting trade for instrument small profit {instrument_token}. "
-                    f"Exit threshold points: {per_instrument_exit_trades_threshold_points}, "
-                    f"Per Trade Profit threshold points: {per_trade_profit_loss_per_share}"
-                )
+                    "Closing trade | Time: %s | Symbol: %s | Instrument: %s | Exit Threshold: %.2f | P/L per share: %.2f | Reason: Threshold hit (small profit)",
+                    datetime.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S"),
+                    trading_symbol,
+                    instrument_token,
+                    per_instrument_exit_trades_threshold_points * self.per_trade_candle_based_profit,
+                    per_trade_profit_loss_per_share
+)
+
                 #self.close_trade_for_the_day = True
                 if reverse_order_id_sq_off:
                     self.previous_order_type = self.current_order_type
