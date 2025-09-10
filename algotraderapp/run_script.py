@@ -536,7 +536,7 @@ class CandleAggregator:
 
 
 
-    def place_single_order(self,kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, order_type, quantity, stop_loss, price=None,percentage = 0.00,order_mode="Reverse_side"):
+    def place_single_order(self,kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, order_type, quantity, stop_loss, price=None,percentage = 0.00,order_mode="Reverse_side"):
         log_file = 'order_placement.log'
         with open(log_file, 'a') as f:  # Open log file in append mode
             try:
@@ -606,7 +606,7 @@ class CandleAggregator:
                 f.write(f"Error placing order for {trading_symbol}: {str(e)}\n")
                 return None
 
-    def handle_reverse_order(self, kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, reverse_strategy_response, lot_size, percentage,mode ="Square OFF"):
+    def handle_reverse_order(self, kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, reverse_strategy_response, lot_size, percentage,mode ="Square OFF"):
         """
         Handles reverse order logic when stop-loss is hit.
         """
@@ -645,7 +645,7 @@ class CandleAggregator:
 
             # Calculate daily profit or loss before reversing the order
             reverse_order_logger.info("Calculating daily profit or loss.")
-            self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, reverse_strategy_response, lot_size, percentage)
+            self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, reverse_strategy_response, lot_size, percentage)
             # Stop-loss hit, place reverse order
             reverse_order_type = "Sell" if reverse_strategy_response['order_type'] == "Buy" else "Buy"
             reverse_order_logger.info(f"Reverse order type determined as: {reverse_order_type}")
@@ -661,6 +661,7 @@ class CandleAggregator:
                                                         trading_symbol,
                                                         exchange,
                                                         exit_trades_threshold_points,
+                                                        loss_trades_threshold_points,
                                                         reverse_order_type,
                                                         lot_size,
                                                         stop_loss_price,
@@ -705,7 +706,7 @@ class CandleAggregator:
             reverse_order_logger.debug("Stop-loss condition not met. No reverse order placed.")
 
     
-    def fetch_and_calculate_daily_profit_loss(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
+    def fetch_and_calculate_daily_profit_loss(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, strategy_response, lot_size, percentage):
         """
         Fetch orders from Kite API and calculate daily profit or loss, with extensive logging.
         """
@@ -762,10 +763,13 @@ class CandleAggregator:
             #self.profit_threshold_points = 0 #assigned to zero for testing
             #fetch_and_calculate_daily_profit_loss.info(f"Updated profit threshold points for {trading_symbol} and  list {trading_symbols_list}: {self.profit_threshold_points}")
             if self.profit_threshold_points>=exit_trades_threshold_points:
-                self.should_close_trade(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
+                self.should_close_trade(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, strategy_response, lot_size, percentage)
+            #CLOSE ON THE BASIS OF LOSS THRESHOLD
+            if self.profit_threshold_points<=(exit_trades_threshold_points + loss_trades_threshold_points):
+                self.should_close_trade(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, strategy_response, lot_size, percentage)
 
             # Optional console output
-            print(f"Total Profit/Loss for the day: {daily_profit_loss_per_share} ,self.profit_threshold_points:{self.profit_threshold_points},exit_trades_threshold_points:{exit_trades_threshold_points}")
+            print(f"Total Profit/Loss for the day: {daily_profit_loss_per_share},loss_trades_threshold_points {exit_trades_threshold_points + loss_trades_threshold_points } ,self.profit_threshold_points:{self.profit_threshold_points},exit_trades_threshold_points:{exit_trades_threshold_points}")
 
             #fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
             return daily_profit_loss_per_share
@@ -1025,7 +1029,7 @@ class CandleAggregator:
 
 
 
-    def should_close_trade(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
+    def should_close_trade(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, strategy_response, lot_size, percentage):
         try:
             """
             Determine if the trade should be closed based on the exit trades threshold points.
@@ -1051,8 +1055,12 @@ class CandleAggregator:
             if self.close_trade_for_the_day:
                 print("in should_close_trade close_trade already for",trading_symbol)
                 return True
-            if not self.close_trade_for_the_day and self.profit_threshold_points and self.profit_threshold_points>=exit_trades_threshold_points and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'):            
-                close_order_logger.info(f"Threshold hit for {exit_trades_threshold_points} and {self.profit_threshold_points} and {self.profit_threshold_points>=exit_trades_threshold_points} {trading_symbol} at price: {current_price}")
+            if not self.close_trade_for_the_day and ((self.profit_threshold_points and self.profit_threshold_points>=exit_trades_threshold_points and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'))
+                or (self.profit_threshold_points and  self.profit_threshold_points<=(exit_trades_threshold_points + loss_trades_threshold_points) and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'))):            
+                close_order_logger.info(f"""Threshold hit for PROFIT EXIT{exit_trades_threshold_points} and {self.profit_threshold_points} and 
+                                        {self.profit_threshold_points>=exit_trades_threshold_points} {trading_symbol} at price: {current_price}""")
+                close_order_logger.info(f"""Threshold hit for LOSS EXIT {exit_trades_threshold_points + loss_trades_threshold_points} and { self.profit_threshold_points} and 
+                                        { self.profit_threshold_points<=(exit_trades_threshold_points + loss_trades_threshold_points)} {trading_symbol} at price: {current_price}""")
                 # Calculate daily profit or loss before reversing the order
                 #self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
                 # Stop-loss hit, place reverse order
@@ -1071,6 +1079,7 @@ class CandleAggregator:
                                                             trading_symbol,
                                                             exchange,
                                                             exit_trades_threshold_points,
+                                                            loss_trades_threshold_points,
                                                             reverse_order_type,
                                                             lot_size,
                                                             current_price,
@@ -1081,13 +1090,16 @@ class CandleAggregator:
                 close_order_logger.info(
                                             f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} - Closing trade for {trading_symbol} due to threshold."
                                             f"Closing trade for the day for instrument {instrument_token}. "
-                                            f"Exit threshold points: {exit_trades_threshold_points}, "
+                                            f"Exit threshold points: {exit_trades_threshold_points}, ",
+                                            f"loss_trades_threshold_points:{loss_trades_threshold_points},"
+                                            f"Exit threshold points with LOSS AT : {exit_trades_threshold_points + loss_trades_threshold_points}, ",
                                             f"Profit threshold points: {self.profit_threshold_points}"
                                         )
                 logging.info(
                     f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} - Closing trade for {trading_symbol} due to threshold."
                     f"Closing trade for the day for instrument {instrument_token}. "
                     f"Exit threshold points: {exit_trades_threshold_points}, "
+                    f"loss_trades_threshold_points:{loss_trades_threshold_points},"
                     f"Profit threshold points: {self.profit_threshold_points}"
                 )
                 self.close_trade_for_the_day = True
@@ -1129,7 +1141,7 @@ class CandleAggregator:
             if not self.close_trade_for_the_day and per_trade_profit_loss_per_share and\
                 per_trade_profit_loss_per_share>=(per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)) and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'):            
                 close_order_logger.info(
-                    "Per Instrument Threshold hit | Threshold: %.2f | P/L per share: %.2f | Condition: %s | Symbol: %s | Price: %.2f",
+                    "Per Instrument Threshold hit | Threshold: %.2f | P/L per share: %.2f | Condition: %s| Symbol: %s | Price: %.2f",
                     per_instrument_exit_trades_threshold_points * self.per_trade_candle_based_profit,
                     per_trade_profit_loss_per_share,
                     per_trade_profit_loss_per_share >= (per_instrument_exit_trades_threshold_points * self.per_trade_candle_based_profit),
@@ -1193,6 +1205,7 @@ class CandleAggregator:
                     self.per_trade_exit_candle_start_time = datetime.datetime.strptime(self.candles[-1]['start_time'], "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo('Asia/Kolkata'))
                     
                 return True  # Trade should be closed
+            
             return False  # Trade should not be closed
         except Exception as error:
             logging.error(f"Error should_close_trade: {str(error)}")
@@ -1392,7 +1405,8 @@ class WebSocketHandler:
             x['instrument_token']: CandleAggregator(instrument_token=int(x['instrument_token']),
                                                     tradingsymbol=x['instrument_details']['tradingsymbol'],
                                                     interval_minutes=int(x['timeframe']),trade_side=x['trade_side'],
-                                                    instrument_details_dict = self.restructure_for_combined_threshold(instruments)) for x in instruments
+                                                    instrument_details_dict = self.restructure_for_combined_threshold(instruments,key = "exit_trades_threshold_points"))
+                                                    for x in instruments
         }
 
         # Define on_ticks method
@@ -1468,6 +1482,7 @@ class WebSocketHandler:
                     trading_symbol = instrument_data['instrument_details']['tradingsymbol']
                     exchange = instrument_data['instrument_details']['exchange']
                     exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'])
+                    loss_trades_threshold_points = float(instrument_data['loss_trades_threshold_points'])
                     per_trade_exit_trades_threshold_points = float(instrument_data['per_trade_exit_trades_threshold_points'])
 
                     if exchange in ['NFO','NSE','BSE'] and current_datetime.hour>=16:
@@ -1488,11 +1503,12 @@ class WebSocketHandler:
                     # Call the async function directly
                     #asyncio.run(candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite))
 
-                    logging.info("tsymbol:order_active:exit,current_profit,closed - %s,%s, %s, %s, %s, %s", 
+                    logging.info("tsymbol:order_active:exit,loss,current_profit,closed - %s,%s, %s, %s, %s, %s, %s", 
                                         str(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
                                         trading_symbol, 
                                         candle_aggregator.order_active, 
                                         exit_trades_threshold_points, 
+                                        loss_trades_threshold_points,
                                         candle_aggregator.profit_threshold_points, 
                                         candle_aggregator.close_trade_for_the_day)
 
@@ -1501,9 +1517,11 @@ class WebSocketHandler:
                         logging.info(
                             f"closed trade for the day for instrument {trading_symbol}. "
                             f"Exit threshold points: {exit_trades_threshold_points}, "
+                            f"loss EXIT threshold points: {loss_trades_threshold_points}, "
+                            f"loss EXIT AT points: {exit_trades_threshold_points + loss_trades_threshold_points}, "
                             f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
                         )
-                        print("------------------closed1--------------------------------",trading_symbol,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
+                        print("------------------closed1--------------------------------",trading_symbol,loss_trades_threshold_points,exit_trades_threshold_points,loss_trades_threshold_points,candle_aggregator.profit_threshold_points)
                         continue
 
                     trading_symbols_list = [x['tradingsymbol'] for x in  candle_aggregator.instrument_details_dict[str(int(exit_trades_threshold_points))]]
@@ -1516,6 +1534,19 @@ class WebSocketHandler:
                             f"****************1234*****************************************************"
                             f"closing trade for the day for instrument at second stage {trading_symbol}. "
                             f"Exit threshold points: {exit_trades_threshold_points}, "
+                            f"loss EXIT threshold points: {loss_trades_threshold_points}, "
+                            f"loss EXIT AT points: {exit_trades_threshold_points + loss_trades_threshold_points}, "
+                            f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
+                            )
+                            candle_aggregator.close_trade_for_the_day = True
+                            
+                        if candle_aggregator.profit_threshold_points<=(exit_trades_threshold_points + loss_trades_threshold_points):
+                            logging.info(
+                            f"****************1234*****************************************************"
+                            f"closing trade for the day for instrument at second stage {trading_symbol}. "
+                            f"Exit threshold points: {exit_trades_threshold_points}, "
+                            f"loss EXIT threshold points: {loss_trades_threshold_points}, "
+                            f"WILL EXIT ON LOSS AT threshold points: {exit_trades_threshold_points + loss_trades_threshold_points}, "
                             f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
                             )
                             candle_aggregator.close_trade_for_the_day = True
@@ -1538,7 +1569,7 @@ class WebSocketHandler:
                     # Call the async function directly
                     #smallprofitbaseperinstrumentexit
                     candle_aggregator.fetch_and_calculate_per_trade_per_instrument_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, per_trade_exit_trades_threshold_points, {}, lot_size, percentage,candle_aggregator.order_id)
-                    candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, {}, lot_size, percentage)
+                    candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, {}, lot_size, percentage)
                     logging.info(f"Current price for token {instrument_token}: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}, Order Type:{candle_aggregator.current_order_type}")
                     if  candle_aggregator.keep_check_strategy == True and (candle_aggregator.order_active and
                             ((candle_aggregator.current_order_type == 'Buy' and candle_aggregator.current_stop_loss and current_price <= candle_aggregator.current_stop_loss) or
@@ -1553,6 +1584,7 @@ class WebSocketHandler:
                             trading_symbol,
                             exchange,
                             exit_trades_threshold_points,
+                            loss_trades_threshold_points,
                             {'order_type': candle_aggregator.current_order_type, 'stop_loss': candle_aggregator.current_stop_loss}, 
                             lot_size, 
                             percentage
@@ -1594,10 +1626,12 @@ class WebSocketHandler:
                             f"------------------closed--------------------------------"
                             f"Part 2 closed trade for the day for instrument {trading_symbol}. "
                             f"Exit threshold points: {exit_trades_threshold_points}, "
+                            f"LOSS Exit threshold points: {loss_trades_threshold_points}, "
+                            f"LOSS based Exit AT points: {exit_trades_threshold_points + loss_trades_threshold_points}, "
                             f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
                             f"------------------****--------------------------------"
                         )
-                        print("------------------closed--------------------------------",trading_symbol,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
+                        print("------------------closed--------------------------------",trading_symbol,exit_trades_threshold_points,loss_trades_threshold_points,candle_aggregator.profit_threshold_points)
                         continue
                     
                     if strategy_response and strategy_response['order_type'] != candle_aggregator.current_order_type and candle_aggregator.order_active:
@@ -1609,6 +1643,7 @@ class WebSocketHandler:
                             trading_symbol,
                             exchange,
                             exit_trades_threshold_points,
+                            loss_trades_threshold_points,
                             {'order_type': candle_aggregator.current_order_type, 'stop_loss': candle_aggregator.current_stop_loss}, 
                             lot_size, 
                             percentage,
@@ -1624,6 +1659,7 @@ class WebSocketHandler:
                             trading_symbol,
                             exchange,
                             exit_trades_threshold_points,
+                            loss_trades_threshold_points,
                             strategy_response['order_type'],
                             lot_size,  # Quantity based on the lot size
                             strategy_response['stop_loss'],
@@ -1714,7 +1750,7 @@ class WebSocketHandler:
         is_reconnecting = False
 
 
-    def restructure_for_combined_threshold(self, instruments_data=[]):
+    def restructure_for_combined_threshold(self, instruments_data=[],key = "exit_trades_threshold_points"):
         """
         Groups instruments by their 'exit_trades_threshold_points' values.
 
@@ -1728,14 +1764,14 @@ class WebSocketHandler:
             grouped_data = defaultdict(list)
             
             for instrument in instruments_data:
-                exit_threshold = instrument.get('exit_trades_threshold_points')
+                exit_threshold = instrument.get(key)
                 if exit_threshold is None:
                     continue  # Skip invalid entries with missing 'exit_trades_threshold_points'
                 
                 grouped_data[exit_threshold].append({
                     "instrument_token": instrument.get('instrument_token'),
                     "tradingsymbol": instrument.get('instrument_details', {}).get('tradingsymbol'),
-                    "exit_trades_threshold_points": exit_threshold,
+                    key: exit_threshold,
                     "lot_size":instrument.get('lot_size')
                 })
             
