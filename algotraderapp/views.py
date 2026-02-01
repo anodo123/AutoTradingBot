@@ -76,7 +76,7 @@ def generate_session(request):
     except Exception as error:
         return JsonResponse({"Some Error Occurred": str(error)}, status=500)
     
-
+from . import helper_classes
 @api_view(['POST'])
 def access_web_socket(request):
     global ws_handler
@@ -93,6 +93,8 @@ def access_web_socket(request):
                 if ws_handler is None:
                     save_json_to_mongodb(directory=".")
                     instrument_details = view_all_added_trading_instrument()
+                    fetcher = helper_classes.HistoricalDataFetcher(kite)
+                    fetcher.fetch_all_historical_data(instrument_details)
                     ws_handler = run_script.WebSocketHandler(kite, instrument_details)
                     threading.Thread(target=ws_handler.run_websocket).start()
                 else:
@@ -102,7 +104,7 @@ def access_web_socket(request):
             return JsonResponse({"Session Not Started, Please Generate Session":True},status = status.HTTP_412_PRECONDITION_FAILED)
     except Exception as error:
         return JsonResponse({"Some Error Occurred": str(error)}, status=500)
-    
+
 
 @api_view(['POST'])
 def stop_web_socket(request):
@@ -200,6 +202,8 @@ def add_trading_instrument(request):
         per_trade_exit_trades_threshold_points= request.POST['per_trade_exit_trades_threshold_points']
         trade_calculation_percentage= request.POST['trade_calculation_percentage']
         timeframe= request.POST['timeframe']
+        ema_interval = request.POST['ema_interval']
+        historical_data_date = request.POST['historical_data_date']
         trade_side = request.POST.get('trade_side','BOTH')
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}")
         database = client[mongo_database]  # Access the database
@@ -223,6 +227,8 @@ def add_trading_instrument(request):
             "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
+            "ema_interval":ema_interval,
+            "historical_data_date":historical_data_date,
             "instrument_details":instrument_details,
             "trade_side":trade_side
         })
@@ -233,6 +239,8 @@ def add_trading_instrument(request):
             "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
+            "ema_interval":ema_interval,
+            "historical_data_date":historical_data_date,
             "instrument_details":instrument_details,
             "trade_side":trade_side,
             "insertion_id":str(result.inserted_id)})
