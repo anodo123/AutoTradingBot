@@ -521,6 +521,10 @@ class CandleAggregator:
             cumulative_volume = 0
             if self.candles == [] or len(self.candles) < 2:
                 return 0
+            if self.last_used_vwap_candle is not None and self.last_used_vwap_candle == candles[-2]:
+                return self.last_calculated_vwap
+            if self.last_used_vwap_candle is None:
+                self.last_used_vwap_candle = candles[-2]
             # Loop in reverse, excluding the most recent (last) candle
             for i in range(len(candles) - 2, -1, -1):  # Exclude last candle
                 candle = candles[i]
