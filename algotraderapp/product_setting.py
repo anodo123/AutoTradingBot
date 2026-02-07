@@ -1,5 +1,6 @@
 
-mongo_url = "host.docker.internal"
+#mongo_url = "host.docker.internal"
+mongo_url = "mongodb"  # Use the service name defined in docker-compose.yml
 mongo_port = "27017"
 mongo_username = "admin"
 mongo_password = "adminpassword"
