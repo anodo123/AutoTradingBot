@@ -335,7 +335,8 @@ class CandleAggregator:
                 response = {}
 
                 # Check for Buy or Sell signals and calculate stop loss
-                if self.buy_alert_candle and  current_high > math.ceil(self.buy_alert_candle['high'] + ((percentage / 100) * self.buy_alert_candle['high'])):
+                if self.buy_alert_candle and  current_high > math.ceil(self.buy_alert_candle['high'] + ((percentage / 100) * self.buy_alert_candle['high'])) and\
+                    self.current_candle['start_time'] > self.buy_alert_candle['start_time']:
                     self.alert_candle = self.buy_alert_candle
                     #self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
                     stop_loss = self.calculate_stop_loss_func("Buy", percentage,self.buy_alert_candle)
@@ -345,7 +346,8 @@ class CandleAggregator:
                         "stop_loss": stop_loss
                     }
                     print(f"Buy signal generated. Stop Loss: {stop_loss}", file=log_file)
-                elif self.sell_alert_candle and  current_low < math.ceil(self.sell_alert_candle['low'] - ((percentage / 100) * self.sell_alert_candle['low'])):
+                elif self.sell_alert_candle and  current_low < math.ceil(self.sell_alert_candle['low'] - ((percentage / 100) * self.sell_alert_candle['low'])) and \
+                    self.current_candle['start_time'] > self.sell_alert_candle['start_time']:
                     self.alert_candle = self.sell_alert_candle
                     #self.per_trade_candle_based_profit = self.alert_candle['high'] - self.alert_candle['low']
                     stop_loss = self.calculate_stop_loss_func("Sell", percentage,self.sell_alert_candle)
