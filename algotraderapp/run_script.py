@@ -534,8 +534,6 @@ class CandleAggregator:
             print(f"Error in get_vwap_upto_n_minus_1_candles: {e}")
             return 0
 
-
-
     def place_single_order(self,kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, order_type, quantity, stop_loss, price=None,percentage = 0.00,order_mode="Reverse_side"):
         log_file = 'order_placement.log'
         with open(log_file, 'a') as f:  # Open log file in append mode
@@ -806,13 +804,37 @@ class CandleAggregator:
             
             
             
-            #fetch_and_calculate_daily_profit_loss.info(f"Updated profit threshold points for {trading_symbol} and  list {trading_symbols_list}: {self.profit_threshold_points}")
-            if per_trade_profit_loss_per_share and per_trade_profit_loss_per_share>=(per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)) and self.order_active:
-                self.exit_trade_for_the_instrument(kite,current_price,instrument_token, trading_symbol, exchange, per_instrument_exit_trades_threshold_points,
-                                      strategy_response, lot_size, percentage,per_trade_profit_loss_per_share)
-            # Optional console output
-            print(f"PER TRADE PROFIT LOSS -->{per_trade_profit_loss_per_share},per_ins_exit_trades_threshold_points:{per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)}")
-            
+            threshold = per_instrument_exit_trades_threshold_points * self.per_trade_candle_based_profit
+
+            print(
+                f"[PER TRADE PER INSTRUMENT EXIT CHECK] symbol={trading_symbol} | "
+                f"profit={per_trade_profit_loss_per_share} | "
+                f"threshold={threshold} | "
+                f"order_active={self.order_active}"
+            )
+
+            if (
+                per_trade_profit_loss_per_share is not None
+                and per_trade_profit_loss_per_share >= threshold
+                and self.order_active
+            ):
+                print(
+                    f"[EXIT TRIGGERED] symbol={trading_symbol} | "
+                    f"profit={per_trade_profit_loss_per_share:.2f} >= threshold={threshold:.2f}"
+                )
+
+                self.exit_trade_for_the_instrument(
+                    kite,
+                    current_price,
+                    instrument_token,
+                    trading_symbol,
+                    exchange,
+                    per_instrument_exit_trades_threshold_points,
+                    strategy_response,
+                    lot_size,
+                    percentage,
+                    per_trade_profit_loss_per_share
+                )
             #fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
             return per_trade_profit_loss_per_share
         except Exception as error:
@@ -1168,6 +1190,7 @@ class CandleAggregator:
                                                             trading_symbol,
                                                             exchange,
                                                             per_instrument_exit_trades_threshold_points,
+                                                            per_instrument_exit_trades_threshold_points, #place holders
                                                             reverse_order_type,
                                                             lot_size,
                                                             current_price,
