@@ -557,7 +557,7 @@ class CandleAggregator:
                                     quantity=quantity,
                                     order_type=kite.ORDER_TYPE_MARKET,  # Use MARKET or LIMIT based on your preference
                                     product=kite.PRODUCT_MIS,  # For intraday trading
-                                    market_protection=1,
+                                    market_protection=10,
                                 )
 
                 elif order_type == "Sell":
@@ -569,7 +569,7 @@ class CandleAggregator:
                                     quantity=quantity,
                                     order_type=kite.ORDER_TYPE_MARKET,  # Use MARKET or LIMIT based on your preference
                                     product=kite.PRODUCT_MIS,  # For intraday trading
-                                    market_protection=1,
+                                    market_protection=10,
                                 )
 
                 if order_id:

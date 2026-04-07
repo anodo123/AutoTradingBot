@@ -10,7 +10,7 @@ pipeline {
                 docker rm django_trading_bot || true
                 docker rmi my_django_app_image || true
 
-                cd /full/path/AutoTradingBot
+                cd /home/ec2-user/AutoTradingBot
                 git pull
 
                 docker build -t my_django_app_image .
