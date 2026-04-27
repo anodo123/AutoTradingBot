@@ -1,3 +1,4 @@
+from django.shortcuts import render
 from .product_setting import mongo_port, mongo_url,mongo_username,mongo_password,mongo_database
 from rest_framework.decorators import api_view
 from rest_framework.response import Response

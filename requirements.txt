@@ -1,6 +1,6 @@
 Django==5.0.6
 pymongo==4.7.2
-kiteconnect==5.2.0
+kiteconnect
 djangorestframework==3.14.0
 channels==4.0.0
 django-cors-headers==4.6.0

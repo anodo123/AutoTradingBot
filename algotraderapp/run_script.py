@@ -2,7 +2,7 @@ import os
 import threading
 import json
 import logging
-#from django.http import JsonResponse
+from django.http import JsonResponse
 from kiteconnect import KiteConnect, KiteTicker
 import time
 import datetime
@@ -1417,8 +1417,6 @@ class CandleAggregator:
             
 # WebSocket Handler Class
 class WebSocketHandler:
-    loss_based_exit_trades_threshold_points = None  # shared across ALL instances
-
     def __init__(self, kite, instruments=[]):
         self.websocket_running = True
         self.kite = kite
@@ -1509,11 +1507,6 @@ class WebSocketHandler:
                     trading_symbol = instrument_data['instrument_details']['tradingsymbol']
                     exchange = instrument_data['instrument_details']['exchange']
                     exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'])
-                    #halving exit threshold points on loss
-                    if WebSocketHandler.loss_based_exit_trades_threshold_points is not None and WebSocketHandler.loss_based_exit_trades_threshold_points!=exit_trades_threshold_points:
-                        logging.info(f"Updating loss_based_exit_trades_threshold_points from {exit_trades_threshold_points} to {WebSocketHandler.loss_based_exit_trades_threshold_points} for all instances")
-                        exit_trades_threshold_points = WebSocketHandler.loss_based_exit_trades_threshold_points
-
                     loss_trades_threshold_points = float(instrument_data['loss_trades_threshold_points'])
                     per_trade_exit_trades_threshold_points = float(instrument_data['per_trade_exit_trades_threshold_points'])
 
@@ -1607,11 +1600,6 @@ class WebSocketHandler:
                             ((candle_aggregator.current_order_type == 'Buy' and candle_aggregator.current_stop_loss and current_price <= candle_aggregator.current_stop_loss) or
                             (candle_aggregator.current_order_type == 'Sell' and candle_aggregator.current_stop_loss and current_price >= candle_aggregator.current_stop_loss))):
                         
-                        
-                        if WebSocketHandler.loss_based_exit_trades_threshold_points is None:                            
-                            WebSocketHandler.loss_based_exit_trades_threshold_points = exit_trades_threshold_points / 2
-                            logging.info(f"First Stop Loss Hit Now we will halven exit threshold points to {WebSocketHandler.loss_based_exit_trades_threshold_points} for all instances due to stop-loss hit for {trading_symbol}")                        
-
                         # Stop-loss hit, handle reverse order
                         logging.warning(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
                         print(f"{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss},Order Type:{candle_aggregator.current_order_type}", file=open("reverse_logic entered.log", "a"))
