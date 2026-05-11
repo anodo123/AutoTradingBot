@@ -1509,7 +1509,12 @@ class WebSocketHandler:
                     exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'])
                     loss_trades_threshold_points = float(instrument_data['loss_trades_threshold_points'])
                     per_trade_exit_trades_threshold_points = float(instrument_data['per_trade_exit_trades_threshold_points'])
-
+                    
+                    if self.original_exit_threshold_points is None:
+                        self.original_exit_threshold_points = exit_trades_threshold_points
+                        logging.info(f"Assigning original_exit_threshold_points = {self.original_exit_threshold_points} and exit = {exit_trades_threshold_points}")
+                        
+                        
                     if exchange in ['NFO','NSE','BSE'] and current_datetime.hour>=16:
                         print("Time More than 3 PM for equity, Bot Will not trade further for the day")
                         continue
@@ -1549,7 +1554,7 @@ class WebSocketHandler:
                         print("------------------closed1--------------------------------",trading_symbol,loss_trades_threshold_points,exit_trades_threshold_points,loss_trades_threshold_points,candle_aggregator.profit_threshold_points)
                         continue
 
-                    trading_symbols_list = [x['tradingsymbol'] for x in  candle_aggregator.instrument_details_dict[str(int(exit_trades_threshold_points))]]
+                    trading_symbols_list = [x['tradingsymbol'] for x in  candle_aggregator.instrument_details_dict[str(int(self.original_exit_threshold_points))]]
                     print(trading_symbols_list)
                     if not candle_aggregator.order_active and (trading_symbol in trading_symbols_list) and not candle_aggregator.close_trade_for_the_day:
                         # Assign the daily profit/loss to the profit threshold points
@@ -1594,12 +1599,18 @@ class WebSocketHandler:
                     # Call the async function directly
                     #smallprofitbaseperinstrumentexit
                     candle_aggregator.fetch_and_calculate_per_trade_per_instrument_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, per_trade_exit_trades_threshold_points, {}, lot_size, percentage,candle_aggregator.order_id)
-                    candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, {}, lot_size, percentage)
+                    candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, {}, lot_size, percentage,self.original_exit_threshold_points)
                     logging.info(f"Current price for token {instrument_token}: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}, Order Type:{candle_aggregator.current_order_type}")
                     if  candle_aggregator.keep_check_strategy == True and (candle_aggregator.order_active and
                             ((candle_aggregator.current_order_type == 'Buy' and candle_aggregator.current_stop_loss and current_price <= candle_aggregator.current_stop_loss) or
-                            (candle_aggregator.current_order_type == 'Sell' and candle_aggregator.current_stop_loss and current_price >= candle_aggregator.current_stop_loss))):
-                        
+                            (candle_aggregator.current_order_type ==  'Sell' and candle_aggregator.current_stop_loss and current_price >= candle_aggregator.current_stop_loss))):
+                                              
+                        if exit_trades_threshold_points and self.original_exit_threshold_points  and self.original_exit_threshold_points==exit_trades_threshold_points:
+                            logging.info(f"Now Stop Loss Hit and og = {self.original_exit_threshold_points} and exit = {exit_trades_threshold_points}")
+                            logging.info("halving stop loss")
+                            exit_trades_threshold_points = exit_trades_threshold_points//2
+                            logging.info(f"New og = {self.original_exit_threshold_points} and exit = {exit_trades_threshold_points}")
+                            
                         # Stop-loss hit, handle reverse order
                         logging.warning(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
                         print(f"{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss},Order Type:{candle_aggregator.current_order_type}", file=open("reverse_logic entered.log", "a"))
