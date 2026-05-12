@@ -706,7 +706,7 @@ class CandleAggregator:
             reverse_order_logger.debug("Stop-loss condition not met. No reverse order placed.")
 
     
-    def fetch_and_calculate_daily_profit_loss(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, strategy_response, lot_size, percentage):
+    def fetch_and_calculate_daily_profit_loss(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points,loss_trades_threshold_points, strategy_response, lot_size, percentage,original_exit_threshold_points = None):
         """
         Fetch orders from Kite API and calculate daily profit or loss, with extensive logging.
         """
@@ -729,6 +729,8 @@ class CandleAggregator:
         #fetch_and_calculate_daily_profit_loss.info("Starting fetch_and_calculate_daily_profit_loss process.")
         
         try:
+            if not original_exit_threshold_points:
+                original_exit_threshold_points = exit_trades_threshold_points
             # Fetch all orders
             all_orders = kite.orders()
             #fetch_and_calculate_daily_profit_loss.debug(f"Fetched {len(all_orders)} orders from Kite API.")
@@ -755,7 +757,7 @@ class CandleAggregator:
             # for single_dict in self.instrument_details_dict[str(int(exit_trades_threshold_points))]:
             #     combinedthresholdinstrumentdetails[single_dict['tradingsymbol']] = single_dict['lot_size']
 
-            trading_symbols_list = [x['tradingsymbol'] for x in  self.instrument_details_dict[str(int(exit_trades_threshold_points))]]
+            trading_symbols_list = [x['tradingsymbol'] for x in  self.instrument_details_dict[str(int(original_exit_threshold_points))]]
 
             # Assign the daily profit/loss to the profit threshold points
             self.profit_threshold_points = self.fetch_profit_loss_from_json_dict(trading_symbols_list)
