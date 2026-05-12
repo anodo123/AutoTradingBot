@@ -1417,6 +1417,7 @@ class CandleAggregator:
             
 # WebSocket Handler Class
 class WebSocketHandler:
+    original_exit_threshold_points = None
     def __init__(self, kite, instruments=[]):
         self.websocket_running = True
         self.kite = kite
