@@ -1368,9 +1368,9 @@ class CandleAggregator:
             #if self.per_trade_exit_candle_start_time and datetime.datetime.now(ZoneInfo('Asia/Kolkata')) >= (self.per_trade_exit_candle_start_time + datetime.timedelta(minutes=self.interval_minutes)):
             if self.per_trade_exit_candle_start_time and now >= exit_time:
                 self.re_entry_logger.info(f"Re-entry allowed for BOTH trade side: at {datetime.datetime.now(ZoneInfo('Asia/Kolkata'))}")
-                self.current_candle = None
-                self.candles = []#self.candles[-1]  # This can remain as a list if needed elsewhere
-                self.reset_candles()
+                # self.current_candle = None
+                # self.candles = []#self.candles[-1]  # This can remain as a list if needed elsewhere
+                # self.reset_candles()
                 #print(self.candles,file=open('right_now_candles.txt', 'a'))
                 # Attributes for order management
                 self.current_stop_loss = None
