@@ -1294,9 +1294,12 @@ class CandleAggregator:
 
     def check_re_entry_eligibility(self):
         """
-        Check if the instrument is eligible for re-entry based on VWAP.
-        Logs the decision and rotates logs to prevent overflow.
+        Check if the instrument is eligible for re-entry.
+        Re-entry is allowed only when:
+        1. Cooldown interval has completed.
+        2. Opposite VWAP crossover has happened after the previous trade.
         """
+
         # Setup logger (only once)
         if not hasattr(self, "re_entry_logger"):
             self.re_entry_logger = logging.getLogger("re_entry_logger")
@@ -1304,8 +1307,8 @@ class CandleAggregator:
 
             handler = RotatingFileHandler(
                 "re_entry.log",
-                maxBytes=5 * 1024 * 1024,  # 5 MB
-                backupCount=3              # Keep 3 rotated files
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3
             )
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             handler.setFormatter(formatter)
@@ -1314,69 +1317,70 @@ class CandleAggregator:
                 self.re_entry_logger.addHandler(handler)
 
         try:
+            # No recently closed trade -> Normal entry allowed
             if not self.just_closed_trade:
-                print("No recent trade closed, eligible for entry.")
                 return True, False
 
             current_vwap = self.get_vwap_upto_n_minus_1_candles(self.candles)
-            last_close = self.candles[-2]['close']
+            last_close = self.candles[-2]["close"]
 
-            # if self.trade_side == "BUY":
-            #     if last_close < current_vwap and self.length_of_candles_at_small_exit and self.length_of_candles_at_small_exit<len(self.candles):
-            #         self.re_entry_logger.info(f"BUY re-entry allowed: Close={last_close} < VWAP={current_vwap}")
-            #         return True, False
-            #     else:
-            #         self.re_entry_logger.info(f"BUY re-entry blocked: Close={last_close} >= VWAP={current_vwap}")
-            #         self.alert_candle = None
-            #         self.buy_alert_candle = None
-            #         self.sell_alert_candle = None
-            #         return False, True
+            now = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).replace(
+                second=0,
+                microsecond=0
+            )
 
-            # elif self.trade_side == "SELL":
-            #     if last_close > current_vwap and self.length_of_candles_at_small_exit and self.length_of_candles_at_small_exit<len(self.candles):
-            #         self.re_entry_logger.info(f"SELL re-entry allowed: Close={last_close} > VWAP={current_vwap}")
-            #         return True, False
-            #     else:
-            #         self.re_entry_logger.info(f"SELL re-entry blocked: Close={last_close} <= VWAP={current_vwap}")
-            #         self.alert_candle = None
-            #         self.buy_alert_candle = None
-            #         self.sell_alert_candle = None
-            #         return False, True
-            # elif self.trade_side == "BOTH":
-                    # if self.previous_order_type and (self.previous_order_type== "BUY" or self.previous_order_type== "Buy"):
-                    #     if last_close < current_vwap and self.length_of_candles_at_small_exit and self.length_of_candles_at_small_exit < len(self.candles):
-                    #         self.re_entry_logger.info(f"BUY re-entry allowed: Close={last_close} < VWAP={current_vwap}")
-                    #         return True, False
-                    #     else:
-                    #         self.re_entry_logger.info(f"BUY re-entry blocked: Close={last_close} >= VWAP={current_vwap}")
-                    # elif self.previous_order_type and (self.previous_order_type== "SELL" or  self.previous_order_type == "Sell"):
-                    #     if last_close > current_vwap and self.length_of_candles_at_small_exit and self.length_of_candles_at_small_exit < len(self.candles):
-                    #         self.re_entry_logger.info(f"SELL re-entry allowed: Close={last_close} > VWAP={current_vwap}")
-                    #         return True, False
-                    #     else:
-                    #         self.re_entry_logger.info(f"SELL re-entry blocked: Close={last_close} <= VWAP={current_vwap}")
-                    # else:
-                    #     self.re_entry_logger.warning(f"Unknown previous_order_type: {self.previous_order_type} Cannot determine re-entry eligibility.")
-            now = datetime.datetime.now(ZoneInfo('Asia/Kolkata')).replace(second=0, microsecond=0)
+            start_time = self.per_trade_exit_candle_start_time.replace(
+                second=0,
+                microsecond=0
+            )
 
-            # Truncate `per_trade_exit_candle_start_time` to hours and minutes
-            start_time = self.per_trade_exit_candle_start_time.replace(second=0, microsecond=0)
+            exit_time = (
+                start_time +
+                datetime.timedelta(minutes=self.interval_minutes)
+            ).replace(second=0, microsecond=0)
 
-            # Compute exit time and truncate it too
-            exit_time = (start_time + datetime.timedelta(minutes=self.interval_minutes)).replace(second=0, microsecond=0)
+            # -----------------------------------
+            # Condition 1 : Cooldown completed
+            # -----------------------------------
+            time_condition = now >= exit_time
 
-            #if self.per_trade_exit_candle_start_time and datetime.datetime.now(ZoneInfo('Asia/Kolkata')) >= (self.per_trade_exit_candle_start_time + datetime.timedelta(minutes=self.interval_minutes)):
-            if self.per_trade_exit_candle_start_time and now >= exit_time:
-                self.re_entry_logger.info(f"Re-entry allowed for BOTH trade side: at {datetime.datetime.now(ZoneInfo('Asia/Kolkata'))}")
-                # self.current_candle = None
-                # self.candles = []#self.candles[-1]  # This can remain as a list if needed elsewhere
-                # self.reset_candles()
-                #print(self.candles,file=open('right_now_candles.txt', 'a'))
-                # Attributes for order management
+            # -----------------------------------
+            # Condition 2 : Opposite crossover
+            # -----------------------------------
+            crossover_condition = False
+
+            if self.previous_order_type and self.previous_order_type.upper() == "SELL":
+                # Previous trade was SELL
+                # Need Close > VWAP
+                crossover_condition = last_close > current_vwap
+
+            elif self.previous_order_type and self.previous_order_type.upper() == "BUY":
+                # Previous trade was BUY
+                # Need Close < VWAP
+                crossover_condition = last_close < current_vwap
+
+            self.re_entry_logger.info(
+                f"Time Condition={time_condition}, "
+                f"Crossover Condition={crossover_condition}, "
+                f"Previous={self.previous_order_type}, "
+                f"Close={last_close}, "
+                f"VWAP={current_vwap}, "
+                f"Now={now}, "
+                f"Exit Time={exit_time}"
+            )
+
+            # -----------------------------------
+            # BOTH conditions must be satisfied
+            # -----------------------------------
+            if time_condition and crossover_condition:
+
+                self.re_entry_logger.info("Re-entry allowed.")
+
+                # Reset strategy state
                 self.current_stop_loss = None
                 self.current_order_type = None
-                self.order_active = False  # Track if an order is active
-                self.profit_threshold_points = 0  # To track total profit or loss
+                self.order_active = False
+                self.profit_threshold_points = 0
                 self.open_price = None
                 self.close_price = None
                 self.close_trade_for_the_day = False
@@ -1396,19 +1400,21 @@ class CandleAggregator:
                 self.trailing_stop_loss_json_data = None
                 self.length_of_candles_at_small_exit = None
                 self.per_trade_exit_candle_start_time = None
+
                 return True, False
-            else:
-                 self.re_entry_logger.info(f"re-entry blocked  {datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} , {self.per_trade_exit_candle_start_time + datetime.timedelta(minutes=self.interval_minutes)}")
+
+            self.re_entry_logger.info("Re-entry blocked.")
+
             self.alert_candle = None
             self.buy_alert_candle = None
             self.sell_alert_candle = None
-            return False, True
 
-            self.re_entry_logger.warning("Unknown trade side; defaulting to not eligible.")
             return False, True
 
         except Exception as e:
-            self.re_entry_logger.error(f"Error in check_re_entry_eligibility: {e}")
+            self.re_entry_logger.exception(
+                f"Error in check_re_entry_eligibility: {e}"
+            )
             return True, False
 
         
