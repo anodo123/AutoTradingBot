@@ -63,6 +63,7 @@ class CandleAggregator:
         self.trailing_stop_loss_json_data = None
         self.length_of_candles_at_small_exit = None
         self.per_trade_exit_candle_start_time = None
+        self.trade_close_side = None
         # Load previous candles from the file, if available
         if os.path.exists(self.file_path):
             with open(self.file_path, 'r') as file:
@@ -1270,6 +1271,11 @@ class CandleAggregator:
                     self.sell_alert_candle = None
                     self.length_of_candles_at_small_exit = len(self.candles)
                     self.current_order_type = None
+                    self.trade_close_side = (
+                        "ABOVE"
+                        if self.candles[-2]["close"] > self.get_vwap_upto_n_minus_1_candles(self.candles)
+                        else "BELOW"
+                    )
                     # Correct way to parse a datetime string
                     self.per_trade_exit_candle_start_time = datetime.datetime.strptime(self.candles[-1]['start_time'], "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo('Asia/Kolkata'))
                     
@@ -1339,9 +1345,10 @@ class CandleAggregator:
     def check_re_entry_eligibility(self):
         """
         Check if the instrument is eligible for re-entry.
+
         Re-entry is allowed only when:
         1. Cooldown interval has completed.
-        2. Opposite VWAP crossover has happened after the previous trade.
+        2. Price has moved to the opposite side of VWAP compared to the exit time.
         """
 
         # Setup logger (only once)
@@ -1354,24 +1361,30 @@ class CandleAggregator:
                 maxBytes=5 * 1024 * 1024,
                 backupCount=3
             )
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+            formatter = logging.Formatter(
+                "%(asctime)s - %(levelname)s - %(message)s"
+            )
             handler.setFormatter(formatter)
 
             if not self.re_entry_logger.handlers:
                 self.re_entry_logger.addHandler(handler)
 
         try:
+
             # No recently closed trade -> Normal entry allowed
             if not self.just_closed_trade:
                 return True, False
 
+            if len(self.candles) < 2:
+                return False, True
+
             current_vwap = self.get_vwap_upto_n_minus_1_candles(self.candles)
             last_close = self.candles[-2]["close"]
 
-            now = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).replace(
-                second=0,
-                microsecond=0
-            )
+            now = datetime.datetime.now(
+                ZoneInfo("Asia/Kolkata")
+            ).replace(second=0, microsecond=0)
 
             start_time = self.per_trade_exit_candle_start_time.replace(
                 second=0,
@@ -1389,24 +1402,24 @@ class CandleAggregator:
             time_condition = now >= exit_time
 
             # -----------------------------------
-            # Condition 2 : Opposite crossover
+            # Condition 2 : Opposite VWAP side
             # -----------------------------------
             crossover_condition = False
 
-            if self.previous_order_type and self.previous_order_type.upper() == "SELL":
-                # Previous trade was SELL
-                # Need Close > VWAP
-                crossover_condition = last_close > current_vwap
-
-            elif self.previous_order_type and self.previous_order_type.upper() == "BUY":
-                # Previous trade was BUY
-                # Need Close < VWAP
+            if self.trade_close_side == "ABOVE":
+                # Exit ke time close VWAP ke upar tha.
+                # Ab wait karo jab tak close VWAP ke neeche na aa jaye.
                 crossover_condition = last_close < current_vwap
+
+            elif self.trade_close_side == "BELOW":
+                # Exit ke time close VWAP ke neeche tha.
+                # Ab wait karo jab tak close VWAP ke upar na aa jaye.
+                crossover_condition = last_close > current_vwap
 
             self.re_entry_logger.info(
                 f"Time Condition={time_condition}, "
-                f"Crossover Condition={crossover_condition}, "
-                f"Previous={self.previous_order_type}, "
+                f"VWAP Side Condition={crossover_condition}, "
+                f"Trade Close Side={self.trade_close_side}, "
                 f"Close={last_close}, "
                 f"VWAP={current_vwap}, "
                 f"Now={now}, "
@@ -1434,6 +1447,7 @@ class CandleAggregator:
                 self.buy_alert_candle = None
                 self.sell_alert_candle = None
                 self.previous_order_type = None
+                self.trade_close_side = None
                 self.last_second_alert_candle = None
                 self.order_id = None
                 self.just_closed_trade = False
