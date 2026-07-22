@@ -1083,45 +1083,45 @@ class CandleAggregator:
                 print("in should_close_trade close_trade already for",trading_symbol)
                 return True
             
-            close_order_logger.info(
-                            f"""
-                        ========== SHOULD CLOSE TRADE DEBUG ==========
-                        Trading Symbol           : {trading_symbol}
-                        Current Price            : {current_price}
-                        Current Order Type       : {self.current_order_type}
-                        Close Trade For Day      : {self.close_trade_for_the_day}
+            # close_order_logger.info(
+            #                 f"""
+            #             ========== SHOULD CLOSE TRADE DEBUG ==========
+            #             Trading Symbol           : {trading_symbol}
+            #             Current Price            : {current_price}
+            #             Current Order Type       : {self.current_order_type}
+            #             Close Trade For Day      : {self.close_trade_for_the_day}
 
-                        Profit Threshold Points  : {self.profit_threshold_points}
-                        Exit Threshold Points    : {exit_trades_threshold_points}
-                        Loss Threshold Points    : {loss_trades_threshold_points}
-                        Loss Limit               : {exit_trades_threshold_points + loss_trades_threshold_points}
+            #             Profit Threshold Points  : {self.profit_threshold_points}
+            #             Exit Threshold Points    : {exit_trades_threshold_points}
+            #             Loss Threshold Points    : {loss_trades_threshold_points}
+            #             Loss Limit               : {exit_trades_threshold_points + loss_trades_threshold_points}
 
-                        Profit Check             : {self.profit_threshold_points >= exit_trades_threshold_points if self.profit_threshold_points is not None else None}
-                        Loss Check               : {self.profit_threshold_points <= (exit_trades_threshold_points + loss_trades_threshold_points) if self.profit_threshold_points is not None else None}
-                        Order Check              : {self.current_order_type in ("Buy", "Sell")}
+            #             Profit Check             : {self.profit_threshold_points >= exit_trades_threshold_points if self.profit_threshold_points is not None else None}
+            #             Loss Check               : {self.profit_threshold_points <= (exit_trades_threshold_points + loss_trades_threshold_points) if self.profit_threshold_points is not None else None}
+            #             Order Check              : {self.current_order_type in ("Buy", "Sell")}
 
-                        Final Condition          : {
-                            (
-                                not self.close_trade_for_the_day
-                                and self.current_order_type in ("Buy", "Sell")
-                                and (
-                                    (
-                                        self.profit_threshold_points is not None
-                                        and self.profit_threshold_points >= exit_trades_threshold_points
-                                    )
-                                    or
-                                    (
-                                        self.profit_threshold_points is not None
-                                        and self.profit_threshold_points <= (
-                                            exit_trades_threshold_points + loss_trades_threshold_points
-                                        )
-                                    )
-                                )
-                            )
-                        }
-                        ==============================================
-                        """
-                        )
+            #             Final Condition          : {
+            #                 (
+            #                     not self.close_trade_for_the_day
+            #                     and self.current_order_type in ("Buy", "Sell")
+            #                     and (
+            #                         (
+            #                             self.profit_threshold_points is not None
+            #                             and self.profit_threshold_points >= exit_trades_threshold_points
+            #                         )
+            #                         or
+            #                         (
+            #                             self.profit_threshold_points is not None
+            #                             and self.profit_threshold_points <= (
+            #                                 exit_trades_threshold_points + loss_trades_threshold_points
+            #                             )
+            #                         )
+            #                     )
+            #                 )
+            #             }
+            #             ==============================================
+            #             """
+            #             )
                         
             
             if not self.close_trade_for_the_day and ((self.profit_threshold_points and self.profit_threshold_points>=exit_trades_threshold_points and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'))
