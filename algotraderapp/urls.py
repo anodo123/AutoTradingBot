@@ -15,5 +15,8 @@ urlpatterns = [
     path('delete_added_trading_instrument',views.delete_added_trading_instrument,name = 'delete_added_trading_instrument'),
     path('callback',views.callback,name = 'callback'),
     path('check_login_status',views.check_login_status,name = 'check_login_status'),
-    path('fetch_candle_data',views.fetch_candle_data,name = 'fetch_candle_data')
+    path('fetch_candle_data',views.fetch_candle_data,name = 'fetch_candle_data'),
+    path('price-action/', views.price_action_dashboard, name='price_action_dashboard'),
+    path('api/price-action/instruments/', views.price_action_instruments, name='price_action_instruments'),
+    path('api/price-action/bricks/', views.fetch_price_action_data, name='fetch_price_action_data'),
 ]

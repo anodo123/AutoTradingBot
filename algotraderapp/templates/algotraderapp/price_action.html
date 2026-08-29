@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Price Action Bricks</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    body { margin: 0; background: #0b1220; color: #e5e7eb; }
+    main { width: min(1100px, calc(100% - 32px)); margin: 32px auto; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+    h1 { margin: 0 0 6px; font-size: 26px; }
+    p { margin: 0; color: #94a3b8; }
+    label { display: grid; gap: 7px; color: #94a3b8; font-size: 13px; }
+    select { min-width: 260px; padding: 10px 12px; border: 1px solid #334155; border-radius: 8px; background: #111827; color: #fff; }
+    .meta { display: flex; gap: 22px; margin: 24px 0 16px; padding: 14px 16px; background: #111827; border: 1px solid #1f2937; border-radius: 10px; flex-wrap: wrap; }
+    .meta span { color: #94a3b8; }
+    .meta strong { color: #f8fafc; margin-left: 6px; }
+    #status[data-kind="error"] { color: #fca5a5; }
+    #status[data-kind="live"] { color: #86efac; }
+    #bricks { min-height: 320px; padding: 24px; display: flex; align-items: center; gap: 4px; overflow-x: auto; background: #111827; border: 1px solid #1f2937; border-radius: 10px; }
+    .brick { flex: 0 0 76px; min-height: 72px; padding: 10px 6px; display: grid; place-content: center; text-align: center; border-radius: 5px; color: white; font-size: 12px; font-weight: 700; }
+    .green { background: #15803d; transform: translateY(-22px); }
+    .red { background: #b91c1c; transform: translateY(22px); }
+    .brick small { display: block; margin-top: 5px; opacity: .8; font-weight: 500; }
+    .empty { margin: auto; color: #64748b; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>Price Action Bricks</h1><p>Price-only data · refreshes every second</p></div>
+    <label>Instrument
+      <select id="instrument"><option value="">Loading instruments…</option></select>
+    </label>
+  </header>
+  <div class="meta">
+    <span>Status<strong id="status">Waiting</strong></span>
+    <span>Base<strong id="base">—</strong></span>
+    <span>Last price<strong id="lastPrice">—</strong></span>
+    <span>Brick size<strong id="brickSize">—</strong></span>
+    <span>Bricks<strong id="count">0</strong></span>
+  </div>
+  <section id="bricks"><div class="empty">Select an instrument</div></section>
+</main>
+<script>
+  const select = document.querySelector('#instrument');
+  const bricks = document.querySelector('#bricks');
+  const status = document.querySelector('#status');
+  let requestRunning = false;
+
+  const setText = (id, value) => document.querySelector(id).textContent = value ?? '—';
+
+  async function loadInstruments() {
+    try {
+      const response = await fetch('../api/price-action/instruments/');
+      if (!response.ok) throw new Error('Could not load instruments');
+      const { instruments } = await response.json();
+      select.innerHTML = '<option value="">Select instrument</option>' + instruments.map(item =>
+        `<option value="${item.instrument_token}">${item.trading_symbol} (${item.instrument_token})</option>`
+      ).join('');
+    } catch (error) {
+      select.innerHTML = '<option value="">Instruments unavailable</option>';
+      showError(error.message);
+    }
+  }
+
+  function showError(message) {
+    status.textContent = message;
+    status.dataset.kind = 'error';
+  }
+
+  async function refresh() {
+    const token = select.value;
+    if (!token || requestRunning) return;
+    requestRunning = true;
+    try {
+      const response = await fetch(`../api/price-action/bricks/?instrument_token=${encodeURIComponent(token)}`, { cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Fetch failed');
+      status.textContent = data.running ? 'Live' : 'Stopped';
+      status.dataset.kind = data.running ? 'live' : '';
+      setText('#base', data.base_price);
+      setText('#lastPrice', data.last_price);
+      setText('#brickSize', data.brick_size);
+      setText('#count', data.bricks.length);
+      bricks.innerHTML = data.bricks.length ? data.bricks.map(brick =>
+        `<div class="brick ${brick.direction}" title="Brick ${brick.sequence}">${brick.close}<small>${brick.open} → ${brick.close}</small></div>`
+      ).join('') : '<div class="empty">Waiting for the first completed brick…</div>';
+      bricks.scrollLeft = bricks.scrollWidth;
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      requestRunning = false;
+    }
+  }
+
+  select.addEventListener('change', () => {
+    bricks.innerHTML = '<div class="empty">Waiting for data…</div>';
+    refresh();
+  });
+  loadInstruments();
+  setInterval(refresh, 1000);
+</script>
+</body>
+</html>

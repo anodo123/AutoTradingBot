@@ -18,6 +18,7 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from . import run_script
+from .price_action import brick_file_path, cleanup_price_action_files
 from zoneinfo import ZoneInfo
 import logging
 from django.http import JsonResponse
@@ -91,7 +92,7 @@ def access_web_socket(request):
             with ws_lock:
                 # Check if WebSocket handler is already running
                 if ws_handler is None:
-                    save_json_to_mongodb(directory=".")
+                    cleanup_price_action_files(directory=".")
                     instrument_details = view_all_added_trading_instrument()
                     ws_handler = run_script.WebSocketHandler(kite, instrument_details)
                     threading.Thread(target=ws_handler.run_websocket).start()
@@ -194,13 +195,16 @@ def download_all_instruments(request):
 @api_view(['POST'])
 def add_trading_instrument(request):
     try:
-        lot_size = request.POST['lot_size']
+        lot_size = request.POST.get('lot_size', '')
         instrument_token = request.POST['instrument_token']
-        exit_trades_threshold_points= request.POST['exit_trades_threshold_points']
-        loss_trades_threshold_points= request.POST['loss_trades_threshold_points']
-        per_trade_exit_trades_threshold_points= request.POST['per_trade_exit_trades_threshold_points']
-        trade_calculation_percentage= request.POST['trade_calculation_percentage']
-        timeframe= request.POST['timeframe']
+        exit_trades_threshold_points = request.POST.get('exit_trades_threshold_points', '')
+        loss_trades_threshold_points = request.POST.get('loss_trades_threshold_points', '')
+        per_trade_exit_trades_threshold_points = request.POST.get('per_trade_exit_trades_threshold_points', '')
+        trade_calculation_percentage = request.POST.get('trade_calculation_percentage', '')
+        timeframe= request.POST.get('timeframe', '')
+        brick_size = request.POST.get('brick_size', '5')
+        if float(brick_size) <= 0:
+            return JsonResponse({"error": "brick_size must be greater than zero"}, status=400)
         trade_side = request.POST.get('trade_side','BOTH')
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}")
         database = client[mongo_database]  # Access the database
@@ -225,6 +229,7 @@ def add_trading_instrument(request):
             "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
+            "brick_size":brick_size,
             "instrument_details":instrument_details,
             "trade_side":trade_side
         })
@@ -236,6 +241,7 @@ def add_trading_instrument(request):
             "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
+            "brick_size":brick_size,
             "instrument_details":instrument_details,
             "trade_side":trade_side,
             "insertion_id":str(result.inserted_id)})
@@ -301,7 +307,7 @@ def update_trading_instrument(request):
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}/")
         data = {}
         for key,value in request.POST.items():
-            if key not in ["lot_size","instrument_token","loss_trades_threshold_points","exit_trades_threshold_points","per_trade_exit_trades_threshold_points","trade_calculation_percentage","timeframe","trade_side"]:
+            if key not in ["lot_size","instrument_token","loss_trades_threshold_points","exit_trades_threshold_points","per_trade_exit_trades_threshold_points","trade_calculation_percentage","timeframe","trade_side","brick_size"]:
                 return JsonResponse({"Invalid Parameter":key})
             else:
                 if key =="instrument_token":
@@ -432,6 +438,45 @@ def fetch_candle_data(request):
         return JsonResponse({"error": "Error decoding JSON file"}, status=500)
     except Exception as error:
         return JsonResponse({"error": str(error)}, status=500)
+
+
+def price_action_dashboard(request):
+    return render(request, "algotraderapp/price_action.html")
+
+
+@api_view(['GET'])
+def price_action_instruments(request):
+    instruments = view_all_added_trading_instrument()
+    data = []
+    for item in instruments:
+        details = item.get("instrument_details", {})
+        data.append({
+            "instrument_token": str(item.get("instrument_token", "")),
+            "trading_symbol": details.get("tradingsymbol", str(item.get("instrument_token", ""))),
+            "brick_size": item.get("brick_size", 5),
+        })
+    return JsonResponse({"instruments": data})
+
+
+@api_view(['GET'])
+def fetch_price_action_data(request):
+    instrument_token = request.GET.get("instrument_token", "").strip()
+    if not instrument_token or not instrument_token.isdigit():
+        return JsonResponse({"error": "A numeric instrument_token is required"}, status=400)
+
+    path = brick_file_path(instrument_token)
+    if not path.exists():
+        return JsonResponse({
+            "instrument_token": instrument_token,
+            "running": ws_handler is not None and ws_handler.is_running(),
+            "bricks": [],
+        })
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Brick data is temporarily unavailable"}, status=503)
+    data["running"] = ws_handler is not None and ws_handler.is_running()
+    return JsonResponse(data)
 
 def view_all_added_trading_instrument():
     try:
