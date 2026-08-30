@@ -2,12 +2,28 @@
 
 import logging
 import time
+from datetime import datetime, time as clock_time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from kiteconnect import KiteTicker
 
 from .price_action import PriceActionBrickGenerator
+
+
+MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
+COLLECTION_START = clock_time(9, 15)
+COLLECTION_END = clock_time(15, 15)
+
+
+def is_collection_time(current_datetime=None):
+    """Return true only from 09:15:00 (inclusive) to 15:15:00 (exclusive) IST."""
+    current_datetime = current_datetime or datetime.now(MARKET_TIMEZONE)
+    if current_datetime.tzinfo is None:
+        current_datetime = current_datetime.replace(tzinfo=MARKET_TIMEZONE)
+    local_time = current_datetime.astimezone(MARKET_TIMEZONE).time().replace(tzinfo=None)
+    return COLLECTION_START <= local_time < COLLECTION_END
 
 
 class WebSocketHandler:
@@ -50,6 +66,8 @@ class WebSocketHandler:
 
     def on_ticks(self, ws, ticks):
         for tick in ticks:
+            if not is_collection_time():
+                continue
             token = str(tick.get("instrument_token", ""))
             generator = self.generators.get(token)
             if generator is None or "last_price" not in tick:
