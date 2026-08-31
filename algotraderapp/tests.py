@@ -44,13 +44,15 @@ class PriceActionBrickGeneratorTests(SimpleTestCase):
         self.assertEqual(payload["base_price"], 218.5)
         self.assertEqual(payload["bricks"], [])
 
-    def test_exact_up_and_down_thresholds_create_bricks(self):
+    def test_reversal_requires_two_brick_sizes(self):
         generator = self.generator()
         generator.process_price(218.5)
         self.assertEqual(generator.process_price(223.5)[0]["direction"], "green")
-        red = generator.process_price(218.5)[0]
+        self.assertEqual(generator.process_price(218.5), [])
+        red = generator.process_price(213.5)[0]
         self.assertEqual(red["direction"], "red")
-        self.assertEqual((red["open"], red["close"]), (223.5, 218.5))
+        self.assertEqual(red["type"], "reversal")
+        self.assertEqual((red["open"], red["close"]), (218.5, 213.5))
 
     def test_movement_smaller_than_brick_size_creates_nothing(self):
         generator = self.generator()
@@ -62,6 +64,24 @@ class PriceActionBrickGeneratorTests(SimpleTestCase):
         generator.process_price(100)
         created = generator.process_price(116)
         self.assertEqual([item["close"] for item in created], [105, 110, 115])
+
+    def test_large_reversal_creates_reversal_then_continuation_bricks(self):
+        generator = self.generator()
+        generator.process_price(100)
+        generator.process_price(105)
+        created = generator.process_price(85)
+        self.assertEqual(
+            [(item["open"], item["close"], item["type"]) for item in created],
+            [(100, 95, "reversal"), (95, 90, "continuation"), (90, 85, "continuation")],
+        )
+
+    def test_up_reversal_after_red_brick_also_requires_two_sizes(self):
+        generator = self.generator()
+        generator.process_price(100)
+        generator.process_price(95)
+        self.assertEqual(generator.process_price(100), [])
+        green = generator.process_price(105)[0]
+        self.assertEqual((green["open"], green["close"], green["type"]), (100, 105, "reversal"))
 
     def test_decimal_brick_size_has_stable_values(self):
         generator = self.generator("0.1")

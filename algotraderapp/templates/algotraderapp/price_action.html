@@ -16,14 +16,22 @@
     .meta { display: flex; gap: 22px; margin: 24px 0 16px; padding: 14px 16px; background: #111827; border: 1px solid #1f2937; border-radius: 10px; flex-wrap: wrap; }
     .meta span { color: #94a3b8; }
     .meta strong { color: #f8fafc; margin-left: 6px; }
-    #status[data-kind="error"] { color: #fca5a5; }
+    #status::before { content: ''; display: inline-block; width: 9px; height: 9px; margin-right: 7px; border-radius: 50%; background: #64748b; }
+    #status[data-kind="fetching"] { color: #fde68a; }
+    #status[data-kind="fetching"]::before { background: #f59e0b; animation: pulse 1s ease-in-out infinite; }
     #status[data-kind="live"] { color: #86efac; }
-    #bricks { min-height: 320px; padding: 24px; display: flex; align-items: center; gap: 4px; overflow-x: auto; background: #111827; border: 1px solid #1f2937; border-radius: 10px; }
-    .brick { flex: 0 0 76px; min-height: 72px; padding: 10px 6px; display: grid; place-content: center; text-align: center; border-radius: 5px; color: white; font-size: 12px; font-weight: 700; }
-    .green { background: #15803d; transform: translateY(-22px); }
-    .red { background: #b91c1c; transform: translateY(22px); }
+    #status[data-kind="live"]::before { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.14); }
+    #status[data-kind="stopped"] { color: #cbd5e1; }
+    #status[data-kind="error"] { color: #fca5a5; }
+    #status[data-kind="error"]::before { background: #ef4444; }
+    @keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
+    #bricks { height: 430px; padding: 24px; overflow: auto; background: #111827; border: 1px solid #1f2937; border-radius: 10px; }
+    .track { position: relative; min-height: 100%; }
+    .brick { position: absolute; width: 74px; box-sizing: border-box; padding: 6px 4px; display: grid; place-content: center; text-align: center; border: 1px solid rgba(255,255,255,.24); border-radius: 3px; color: white; font-size: 12px; font-weight: 700; }
+    .green { background: #15803d; }
+    .red { background: #b91c1c; }
     .brick small { display: block; margin-top: 5px; opacity: .8; font-weight: 500; }
-    .empty { margin: auto; color: #64748b; }
+    .empty { height: 100%; display: grid; place-content: center; color: #64748b; }
   </style>
 </head>
 <body>
@@ -70,23 +78,45 @@
     status.dataset.kind = 'error';
   }
 
+  function renderBricks(items) {
+    if (!items.length) {
+      bricks.innerHTML = '<div class="empty">Waiting for the first completed brick…</div>';
+      return;
+    }
+    const prices = items.flatMap(item => [Number(item.open), Number(item.close)]);
+    const minimum = Math.min(...prices);
+    const maximum = Math.max(...prices);
+    const brickSize = Number(items[0].brick_size) || 1;
+    const levelCount = Math.max(1, Math.round((maximum - minimum) / brickSize));
+    const levelHeight = 54;
+    const chartHeight = Math.max(350, (levelCount + 2) * levelHeight);
+    const chartWidth = Math.max(bricks.clientWidth - 48, items.length * 80 + 30);
+    bricks.innerHTML = `<div class="track" style="height:${chartHeight}px;width:${chartWidth}px">${items.map((brick, index) => {
+      const low = Math.min(Number(brick.open), Number(brick.close));
+      const bottom = ((low - minimum) / brickSize) * levelHeight + levelHeight;
+      const title = `${brick.type}: ${brick.open} → ${brick.close}`;
+      return `<div class="brick ${brick.direction}" style="left:${index * 80}px;bottom:${bottom}px;height:${levelHeight}px" title="${title}">${brick.close}<small>${brick.type}</small></div>`;
+    }).join('')}</div>`;
+  }
+
   async function refresh() {
     const token = select.value;
     if (!token || requestRunning) return;
     requestRunning = true;
+    status.textContent = 'Fetching…';
+    status.dataset.kind = 'fetching';
     try {
       const response = await fetch(`../api/price-action/bricks/?instrument_token=${encodeURIComponent(token)}`, { cache: 'no-store' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Fetch failed');
-      status.textContent = data.running ? 'Live' : 'Stopped';
-      status.dataset.kind = data.running ? 'live' : '';
+      const updatedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      status.textContent = data.running ? `Live · updated ${updatedAt}` : `Stopped · checked ${updatedAt}`;
+      status.dataset.kind = data.running ? 'live' : 'stopped';
       setText('#base', data.base_price);
       setText('#lastPrice', data.last_price);
       setText('#brickSize', data.brick_size);
       setText('#count', data.bricks.length);
-      bricks.innerHTML = data.bricks.length ? data.bricks.map(brick =>
-        `<div class="brick ${brick.direction}" title="Brick ${brick.sequence}">${brick.close}<small>${brick.open} → ${brick.close}</small></div>`
-      ).join('') : '<div class="empty">Waiting for the first completed brick…</div>';
+      renderBricks(data.bricks);
       bricks.scrollLeft = bricks.scrollWidth;
     } catch (error) {
       showError(error.message);

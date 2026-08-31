@@ -42,6 +42,7 @@ class PriceActionBrickGenerator:
         self.file_path = brick_file_path(self.instrument_token, output_directory)
         self.base_price = None
         self.last_price = None
+        self.last_direction = None
         self.bricks = []
         self._lock = threading.Lock()
 
@@ -55,26 +56,71 @@ class PriceActionBrickGenerator:
                 return []
 
             new_bricks = []
-            while current_price >= self.base_price + self.brick_size:
-                new_bricks.append(self._append_brick("green", self.base_price + self.brick_size))
-            while current_price <= self.base_price - self.brick_size:
-                new_bricks.append(self._append_brick("red", self.base_price - self.brick_size))
+            if self.last_direction is None:
+                if current_price >= self.base_price + self.brick_size:
+                    while current_price >= self.base_price + self.brick_size:
+                        brick_type = "initial" if self.last_direction is None else "continuation"
+                        new_bricks.append(self._append_brick(
+                            "green", self.base_price, self.base_price + self.brick_size, brick_type
+                        ))
+                elif current_price <= self.base_price - self.brick_size:
+                    while current_price <= self.base_price - self.brick_size:
+                        brick_type = "initial" if self.last_direction is None else "continuation"
+                        new_bricks.append(self._append_brick(
+                            "red", self.base_price, self.base_price - self.brick_size, brick_type
+                        ))
+            elif self.last_direction == "green":
+                while current_price >= self.base_price + self.brick_size:
+                    new_bricks.append(self._append_brick(
+                        "green", self.base_price, self.base_price + self.brick_size, "continuation"
+                    ))
+                if current_price <= self.base_price - (self.brick_size * 2):
+                    new_bricks.append(self._append_brick(
+                        "red",
+                        self.base_price - self.brick_size,
+                        self.base_price - (self.brick_size * 2),
+                        "reversal",
+                    ))
+                    while current_price <= self.base_price - self.brick_size:
+                        new_bricks.append(self._append_brick(
+                            "red", self.base_price, self.base_price - self.brick_size, "continuation"
+                        ))
+            else:
+                while current_price <= self.base_price - self.brick_size:
+                    new_bricks.append(self._append_brick(
+                        "red", self.base_price, self.base_price - self.brick_size, "continuation"
+                    ))
+                if current_price >= self.base_price + (self.brick_size * 2):
+                    new_bricks.append(self._append_brick(
+                        "green",
+                        self.base_price + self.brick_size,
+                        self.base_price + (self.brick_size * 2),
+                        "reversal",
+                    ))
+                    while current_price >= self.base_price + self.brick_size:
+                        new_bricks.append(self._append_brick(
+                            "green", self.base_price, self.base_price + self.brick_size, "continuation"
+                        ))
 
             if new_bricks:
                 self._save()
             return new_bricks
 
-    def _append_brick(self, direction, close_price):
+    def _append_brick(self, direction, open_price, close_price, brick_type):
         brick = {
             "sequence": len(self.bricks) + 1,
-            "open": _number(self.base_price),
+            "open": _number(open_price),
             "close": _number(close_price),
+            "high": _number(max(open_price, close_price)),
+            "low": _number(min(open_price, close_price)),
             "direction": direction,
+            "type": brick_type,
             "brick_size": _number(self.brick_size),
             "created_at": datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(),
         }
         self.bricks.append(brick)
         self.base_price = close_price
+        self.last_direction = direction
         return brick
 
     def _save(self):
@@ -84,6 +130,7 @@ class PriceActionBrickGenerator:
             "brick_size": _number(self.brick_size),
             "base_price": _number(self.base_price),
             "last_price": _number(self.last_price),
+            "last_direction": self.last_direction,
             "bricks": self.bricks,
         }
         temporary_path = self.file_path.with_suffix(self.file_path.suffix + ".tmp")
