@@ -13,12 +13,12 @@ from .price_action import PriceActionBrickGenerator
 
 
 MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
-COLLECTION_START = clock_time(9, 15)
+COLLECTION_START = clock_time(9, 15, 10)
 COLLECTION_END = clock_time(15, 15)
 
 
 def is_collection_time(current_datetime=None):
-    """Return true only from 09:15:00 (inclusive) to 15:15:00 (exclusive) IST."""
+    """Return true only from 09:15:10 (inclusive) to 15:15:00 (exclusive) IST."""
     current_datetime = current_datetime or datetime.now(MARKET_TIMEZONE)
     if current_datetime.tzinfo is None:
         current_datetime = current_datetime.replace(tzinfo=MARKET_TIMEZONE)

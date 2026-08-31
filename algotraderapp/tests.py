@@ -15,11 +15,11 @@ class CollectionWindowTests(SimpleTestCase):
     def ist_datetime(self, hour, minute, second=0):
         return datetime(2026, 8, 30, hour, minute, second, tzinfo=ZoneInfo("Asia/Kolkata"))
 
-    def test_ticks_are_blocked_before_091500(self):
-        self.assertFalse(is_collection_time(self.ist_datetime(9, 14, 59)))
+    def test_ticks_are_blocked_before_091510(self):
+        self.assertFalse(is_collection_time(self.ist_datetime(9, 15, 9)))
 
-    def test_ticks_start_at_091500(self):
-        self.assertTrue(is_collection_time(self.ist_datetime(9, 15, 0)))
+    def test_ticks_start_at_091510(self):
+        self.assertTrue(is_collection_time(self.ist_datetime(9, 15, 10)))
 
     def test_ticks_are_blocked_from_151500(self):
         self.assertTrue(is_collection_time(self.ist_datetime(15, 14, 59)))
