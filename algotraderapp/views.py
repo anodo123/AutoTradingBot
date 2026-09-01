@@ -19,6 +19,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from . import run_script
 from .price_action import brick_file_path, cleanup_price_action_files
+from .raw_ticks import cleanup_raw_tick_files
 from zoneinfo import ZoneInfo
 import logging
 from django.http import JsonResponse
@@ -93,6 +94,7 @@ def access_web_socket(request):
                 # Check if WebSocket handler is already running
                 if ws_handler is None:
                     cleanup_price_action_files(directory=".")
+                    cleanup_raw_tick_files(base_directory=".")
                     instrument_details = view_all_added_trading_instrument()
                     ws_handler = run_script.WebSocketHandler(kite, instrument_details)
                     threading.Thread(target=ws_handler.run_websocket).start()

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from kiteconnect import KiteTicker
 
 from .price_action import PriceActionBrickGenerator
+from .raw_ticks import RawTickLogger
 
 
 MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
@@ -33,6 +34,7 @@ class WebSocketHandler:
         self.instruments = instruments or []
         self.instrument_tokens = [int(item["instrument_token"]) for item in self.instruments]
         self.generators = {}
+        self.raw_tick_logger = RawTickLogger(self.instruments, base_directory=Path.cwd())
 
         for item in self.instruments:
             token = str(item["instrument_token"])
@@ -66,6 +68,10 @@ class WebSocketHandler:
 
     def on_ticks(self, ws, ticks):
         for tick in ticks:
+            try:
+                self.raw_tick_logger.log_tick(tick)
+            except (OSError, TypeError, ValueError):
+                logging.exception("Could not store raw tick for instrument %s", tick.get("instrument_token"))
             if not is_collection_time():
                 continue
             token = str(tick.get("instrument_token", ""))

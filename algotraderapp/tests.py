@@ -2,13 +2,14 @@ import json
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 from django.test import SimpleTestCase
 
 from .price_action import PriceActionBrickGenerator, cleanup_price_action_files
-from .run_script import is_collection_time
+from .run_script import WebSocketHandler, is_collection_time
+from .raw_ticks import RawTickLogger, cleanup_raw_tick_files
 
 
 class CollectionWindowTests(SimpleTestCase):
@@ -24,6 +25,72 @@ class CollectionWindowTests(SimpleTestCase):
     def test_ticks_are_blocked_from_151500(self):
         self.assertTrue(is_collection_time(self.ist_datetime(15, 14, 59)))
         self.assertFalse(is_collection_time(self.ist_datetime(15, 15, 0)))
+
+
+class RawTickLoggerTests(SimpleTestCase):
+    def setUp(self):
+        self.temp_directory = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temp_directory.name)
+        self.instruments = [{
+            "instrument_token": "123",
+            "instrument_details": {"tradingsymbol": "NIFTY 50"},
+        }]
+
+    def tearDown(self):
+        self.temp_directory.cleanup()
+
+    def test_stores_complete_tick_with_timestamp_in_instrument_file(self):
+        logger = RawTickLogger(self.instruments, self.directory)
+        tick = {
+            "instrument_token": 123,
+            "last_price": 24366.5,
+            "depth": {"buy": [{"price": 24366.0, "quantity": 10}]},
+        }
+        received_at = datetime(2026, 9, 1, 9, 15, 9, 123456, tzinfo=ZoneInfo("Asia/Kolkata"))
+        path = logger.log_tick(tick, received_at)
+
+        self.assertEqual(path.name, "NIFTY_50_123_09_01_part001.jsonl")
+        record = json.loads(path.read_text(encoding="utf-8").strip())
+        self.assertEqual(record["received_at"], received_at.isoformat())
+        self.assertEqual(record["trading_symbol"], "NIFTY 50")
+        self.assertEqual(record["tick"], tick)
+
+    def test_rotates_and_deletes_oldest_parts_to_stay_under_limit(self):
+        logger = RawTickLogger(
+            self.instruments,
+            self.directory,
+            max_total_bytes=900,
+            max_part_bytes=300,
+        )
+        received_at = datetime(2026, 9, 1, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+        for index in range(12):
+            logger.log_tick({"instrument_token": 123, "last_price": index}, received_at)
+
+        files = list((self.directory / "raw_ticks").glob("*.jsonl"))
+        self.assertLessEqual(sum(path.stat().st_size for path in files), 900)
+        all_lines = [line for path in files for line in path.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(json.loads(line)["tick"]["last_price"] == 11 for line in all_lines))
+
+    def test_cleanup_removes_raw_logs_but_not_unrelated_files(self):
+        logger = RawTickLogger(self.instruments, self.directory)
+        logger.log_tick({"instrument_token": 123, "last_price": 100})
+        unrelated = self.directory / "keep.json"
+        unrelated.write_text("{}", encoding="utf-8")
+        cleanup_raw_tick_files(self.directory)
+        self.assertFalse((self.directory / "raw_ticks").exists())
+        self.assertTrue(unrelated.exists())
+
+    @patch("algotraderapp.run_script.is_collection_time", return_value=False)
+    def test_tick_is_logged_before_price_action_time_filter(self, collection_time):
+        handler = WebSocketHandler.__new__(WebSocketHandler)
+        handler.raw_tick_logger = Mock()
+        handler.generators = {"123": Mock()}
+        tick = {"instrument_token": 123, "last_price": 100}
+
+        handler.on_ticks(None, [tick])
+
+        handler.raw_tick_logger.log_tick.assert_called_once_with(tick)
+        handler.generators["123"].process_price.assert_not_called()
 
 
 class PriceActionBrickGeneratorTests(SimpleTestCase):
