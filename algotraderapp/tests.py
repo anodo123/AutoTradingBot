@@ -337,18 +337,18 @@ class ConfigurableStartTests(SimpleTestCase):
 
     def test_invalid_api_times_have_no_startup_side_effects(self):
         with patch('algotraderapp.views.run_script.WebSocketHandler') as handler, patch('algotraderapp.views.setup_run_logging') as logs:
-            for value in ['09:20', '9:20:30', '24:00:00', '09:60:00', '09:20:60', '15:15:00', '16:00:00', '', None, 123]:
-                response = self.client.post('/algotraderapp/access_web_socket', {'start_time': value}, content_type='application/json')
+            for value in ['09:20', '9:20:30', '24:00:00', '09:60:00', '09:20:60', '15:15:00', '16:00:00', '', '123']:
+                response = self.client.post('/algotraderapp/access_web_socket', {'start_time': value})
                 self.assertEqual(response.status_code, 400, value)
             handler.assert_not_called()
             logs.assert_not_called()
 
-    def test_json_form_and_default_reach_handler(self):
+    def test_form_and_default_reach_handler(self):
         from contextlib import ExitStack
         item = dict(instrument_token='123', lot_size='10', brick_size=5, trade_side='BUY',
                     instrument_details=dict(exchange='NSE', tradingsymbol='TEST'))
-        for data, content_type, expected in [({'start_time': '09:25:45'}, 'application/json', '09:25:45'),
-                                            ({'start_time': '09:15:00'}, None, '09:15:00'), ({}, 'application/json', '09:15:10')]:
+        for data, content_type, expected in [('start_time=09%3A25%3A45', 'application/x-www-form-urlencoded', '09:25:45'),
+                                            ({'start_time': '09:15:00'}, None, '09:15:00'), ({}, None, '09:15:10')]:
             with ExitStack() as stack:
                 stack.enter_context(patch('algotraderapp.views.ws_handler', None))
                 stack.enter_context(patch.dict('os.environ', {'access_token': 'test'}))
@@ -381,3 +381,10 @@ class ConfigurableStartTests(SimpleTestCase):
             clock.now.return_value = datetime(2026, 9, 1, 9, 25, 45, tzinfo=ZoneInfo('Asia/Kolkata'))
             handler.on_ticks(None, [{'instrument_token': 123, 'last_price': 101}])
             handler.generators['123'].process_price.assert_called_once_with(101)
+
+    def test_raw_json_is_rejected_without_starting(self):
+        with patch('algotraderapp.views.run_script.WebSocketHandler') as handler:
+            response = self.client.post('/algotraderapp/access_web_socket',
+                                        {'start_time': '09:20:30'}, content_type='application/json')
+            self.assertEqual(response.status_code, 415)
+            handler.assert_not_called()

@@ -84,7 +84,9 @@ def generate_session(request):
 def access_web_socket(request):
     global ws_handler
     try:
-        start_time = request.data.get('start_time', '09:15:10')
+        if request.content_type.split(';', 1)[0].strip().lower() not in ('multipart/form-data', 'application/x-www-form-urlencoded'):
+            return JsonResponse({"error": "Send start_time as form-data or x-www-form-urlencoded"}, status=415)
+        start_time = request.POST.get('start_time', '09:15:10')
         try:
             run_script.parse_start_time(start_time)
         except ValueError as error:

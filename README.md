@@ -26,11 +26,13 @@ MongoDB in `algotraderapp/product_setting.py`. Run `python manage.py runserver`.
 The existing login, instrument configuration, start and stop APIs live under `/algotraderapp/`.
 The dashboard is `/algotraderapp/price-action/` and refreshes every second.
 
-POST `/algotraderapp/access_web_socket` accepts JSON or form data:
+POST `/algotraderapp/access_web_socket` accepts multipart form-data or x-www-form-urlencoded:
 
-```json
-{"start_time": "09:20:30"}
+```text
+start_time=09:20:30
 ```
+
+Raw JSON requests return HTTP 415; use Postman Body > form-data.
 
 `start_time` must be a valid `HH:MM:SS` IST time earlier than `15:15:00`.
 Omitting it defaults to `09:15:10`. Invalid values return HTTP 400 before any
