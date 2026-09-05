@@ -1,6 +1,7 @@
 """Live completed-brick trading and tick collection."""
 
 import logging
+import re
 import time
 from datetime import datetime, time as clock_time
 from decimal import Decimal, InvalidOperation
@@ -19,17 +20,32 @@ COLLECTION_START = clock_time(9, 15, 10)
 COLLECTION_END = clock_time(15, 15)
 
 
-def is_collection_time(current_datetime=None):
-    """Return true only from 09:15:10 (inclusive) to 15:15:00 (exclusive) IST."""
+def parse_start_time(value):
+    """Validate the API's IST start time before any run side effects."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{2}:[0-9]{2}:[0-9]{2}", value):
+        raise ValueError("start_time must use HH:MM:SS format (IST)")
+    try:
+        parsed = clock_time.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("start_time must be a valid HH:MM:SS time (IST)") from error
+    if parsed >= COLLECTION_END:
+        raise ValueError("start_time must be earlier than 15:15:00 IST")
+    return parsed
+
+
+def is_collection_time(current_datetime=None, start_time=COLLECTION_START):
+    """Start inclusive, 15:15:00 exclusive, in IST."""
     current_datetime = current_datetime or datetime.now(MARKET_TIMEZONE)
     if current_datetime.tzinfo is None:
         current_datetime = current_datetime.replace(tzinfo=MARKET_TIMEZONE)
     local_time = current_datetime.astimezone(MARKET_TIMEZONE).time().replace(tzinfo=None)
-    return COLLECTION_START <= local_time < COLLECTION_END
+    return start_time <= local_time < COLLECTION_END
 
 
 class WebSocketHandler:
-    def __init__(self, kite, instruments=None):
+    def __init__(self, kite, instruments=None, start_time="09:15:10"):
+        self.collection_start = parse_start_time(start_time)
+        logging.info("Collection schedule: start=%s end=15:15:00 timezone=Asia/Kolkata", start_time)
         self.websocket_running = True
         self.kite = kite
         self.instruments = instruments or []
@@ -84,7 +100,7 @@ class WebSocketHandler:
                 logging.exception("Could not store raw tick for instrument %s", tick.get("instrument_token"))
             for trader in getattr(self, "traders", {}).values():
                 trader.poll()
-            if not is_collection_time():
+            if not is_collection_time(start_time=getattr(self, "collection_start", COLLECTION_START)):
                 logging.info("Tick skipped for bricks: outside collection window")
                 continue
             token = str(tick.get("instrument_token", ""))

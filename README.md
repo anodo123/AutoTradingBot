@@ -26,7 +26,20 @@ MongoDB in `algotraderapp/product_setting.py`. Run `python manage.py runserver`.
 The existing login, instrument configuration, start and stop APIs live under `/algotraderapp/`.
 The dashboard is `/algotraderapp/price-action/` and refreshes every second.
 
-Bricks are collected from 09:15:10 inclusive to 15:15 exclusive IST. Raw received ticks are
+POST `/algotraderapp/access_web_socket` accepts JSON or form data:
+
+```json
+{"start_time": "09:20:30"}
+```
+
+`start_time` must be a valid `HH:MM:SS` IST time earlier than `15:15:00`.
+Omitting it defaults to `09:15:10`. Invalid values return HTTP 400 before any
+startup or cleanup. The response includes the configured start/end time and timezone.
+The WebSocket connects immediately, but bricks and trading wait for the selected time.
+The first tick at or after that time anchors the price; the first completed brick triggers entry.
+If the start time has already passed, collection begins immediately (before the cutoff).
+An already-running session retains its schedule; changing it requires a fresh run.
+Bricks are collected from the selected start inclusive to 15:15 exclusive IST. Raw received ticks are
 logged even outside that window. The end of the window and the stop API do not square off positions.
 The stop API also stops its Docker container, falling back to process termination if Docker stop fails,
 because closing the WebSocket alone has been unreliable in deployment. Broker positions remain open.

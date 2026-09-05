@@ -323,3 +323,61 @@ class BrickTradingTests(SimpleTestCase):
                         handler.close()
         finally:
             root.setLevel(original_level)
+
+
+class ConfigurableStartTests(SimpleTestCase):
+    def test_second_precision_boundaries(self):
+        from .run_script import parse_start_time
+        start = parse_start_time('09:20:30')
+        for h, m, s, expected in [(9, 20, 29, False), (9, 20, 30, True), (9, 25, 0, True), (15, 15, 0, False)]:
+            now = datetime(2026, 9, 1, h, m, s, tzinfo=ZoneInfo('Asia/Kolkata'))
+            self.assertEqual(is_collection_time(now, start), expected)
+        utc = datetime(2026, 9, 1, 3, 50, 30, tzinfo=ZoneInfo('UTC'))
+        self.assertTrue(is_collection_time(utc, start))
+
+    def test_invalid_api_times_have_no_startup_side_effects(self):
+        with patch('algotraderapp.views.run_script.WebSocketHandler') as handler, patch('algotraderapp.views.setup_run_logging') as logs:
+            for value in ['09:20', '9:20:30', '24:00:00', '09:60:00', '09:20:60', '15:15:00', '16:00:00', '', None, 123]:
+                response = self.client.post('/algotraderapp/access_web_socket', {'start_time': value}, content_type='application/json')
+                self.assertEqual(response.status_code, 400, value)
+            handler.assert_not_called()
+            logs.assert_not_called()
+
+    def test_json_form_and_default_reach_handler(self):
+        from contextlib import ExitStack
+        item = dict(instrument_token='123', lot_size='10', brick_size=5, trade_side='BUY',
+                    instrument_details=dict(exchange='NSE', tradingsymbol='TEST'))
+        for data, content_type, expected in [({'start_time': '09:25:45'}, 'application/json', '09:25:45'),
+                                            ({'start_time': '09:15:00'}, None, '09:15:00'), ({}, 'application/json', '09:15:10')]:
+            with ExitStack() as stack:
+                stack.enter_context(patch('algotraderapp.views.ws_handler', None))
+                stack.enter_context(patch.dict('os.environ', {'access_token': 'test'}))
+                kite = stack.enter_context(patch('algotraderapp.views.kite'))
+                kite.positions.return_value = {'net': []}
+                kite.orders.return_value = []
+                stack.enter_context(patch('algotraderapp.views.view_all_added_trading_instrument', return_value=[item]))
+                for name in ['setup_run_logging', 'cleanup_price_action_files', 'cleanup_raw_tick_files', 'threading.Thread']:
+                    stack.enter_context(patch('algotraderapp.views.' + name))
+                handler = stack.enter_context(patch('algotraderapp.views.run_script.WebSocketHandler'))
+                kwargs = {'content_type': content_type} if content_type else {}
+                response = self.client.post('/algotraderapp/access_web_socket', data, **kwargs)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['start_time'], expected)
+                handler.assert_called_once_with(kite, [item], start_time=expected)
+
+    def test_ticks_before_custom_start_only_log_raw_data(self):
+        from .run_script import parse_start_time
+        handler = WebSocketHandler.__new__(WebSocketHandler)
+        handler.collection_start = parse_start_time('09:25:45')
+        handler.raw_tick_logger = Mock()
+        handler.generators = {'123': Mock()}
+        handler.generators['123'].process_price.return_value = []
+        handler.traders = {'123': Mock()}
+        with patch('algotraderapp.run_script.datetime') as clock:
+            clock.now.return_value = datetime(2026, 9, 1, 9, 25, 44, tzinfo=ZoneInfo('Asia/Kolkata'))
+            handler.on_ticks(None, [{'instrument_token': 123, 'last_price': 100}])
+            handler.generators['123'].process_price.assert_not_called()
+            handler.raw_tick_logger.log_tick.assert_called_once()
+            clock.now.return_value = datetime(2026, 9, 1, 9, 25, 45, tzinfo=ZoneInfo('Asia/Kolkata'))
+            handler.on_ticks(None, [{'instrument_token': 123, 'last_price': 101}])
+            handler.generators['123'].process_price.assert_called_once_with(101)

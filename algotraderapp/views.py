@@ -84,6 +84,11 @@ def generate_session(request):
 def access_web_socket(request):
     global ws_handler
     try:
+        start_time = request.data.get('start_time', '09:15:10')
+        try:
+            run_script.parse_start_time(start_time)
+        except ValueError as error:
+            return JsonResponse({"error": str(error)}, status=400)
         access_token = os.getenv('access_token')
         kite.set_access_token(access_token)
         # existing_orders = kite.orders()
@@ -114,11 +119,11 @@ def access_web_socket(request):
                     logging.info("Fresh run starting; configured instruments=%s", instrument_details)
                     cleanup_price_action_files(directory=".")
                     cleanup_raw_tick_files(base_directory=".")
-                    ws_handler = run_script.WebSocketHandler(kite, instrument_details)
+                    ws_handler = run_script.WebSocketHandler(kite, instrument_details, start_time=start_time)
                     threading.Thread(target=ws_handler.run_websocket).start()
                 else:
                     return JsonResponse({"Websocket Already Running": True})            
-            return JsonResponse({"Websocket Started": True,"access_token": access_token})
+            return JsonResponse({"Websocket Started": True,"access_token": access_token, "start_time": start_time, "end_time": "15:15:00", "timezone": "Asia/Kolkata"})
         else:
             return JsonResponse({"Session Not Started, Please Generate Session":True},status = status.HTTP_412_PRECONDITION_FAILED)
     except Exception as error:
