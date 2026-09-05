@@ -1,145 +1,56 @@
-# **Trading Automation System with KiteConnect**
+# Completed-brick trading bot
 
-This repository contains a Django-based Python application for algorithmic trading. It uses the **KiteConnect API** to process real-time market data and manage trades effectively. The application is designed to operate autonomously, integrating advanced strategies, order management, and profit/loss tracking. It includes robust logging and error handling for reliable performance in live trading environments.
+Django APIs configure instruments in MongoDB and authenticate with Zerodha Kite.
+The `price_action_bot` branch trades completed fixed-size price bricks.
 
----
+## Strategy
 
-## **Key Features**
+- The first tick anchors the price. Entry waits for the first newly completed brick.
+- Continuation takes one brick size; reversal takes two brick sizes.
+- BUY: green enters a long, red reversal closes it and leaves the bot flat.
+- SELL: red enters a short, green reversal closes it and leaves the bot flat.
+- BOTH: reversal closes the position, then opens the opposite position after confirmed exit.
+- Same-colour continuation bricks never add to a position.
+- `lot_size` is the exact order quantity, not a multiplier of exchange lot size.
+- Orders use regular MARKET / MIS / DAY with 10% market protection (as in the previous trading branch).
+- VWAP, percentage triggers, separate stop-loss and profit/loss exits are not used.
 
-### 1. **Real-time Market Data Processing**
-- Utilizes **KiteConnect's WebSocket API (`KiteTicker`)** for real-time tick data streaming.
-- Processes tick data for a list of specified instruments, allowing efficient trade execution.
-- Includes the `WebSocketHandler` class for:
-  - Establishing and managing WebSocket connections.
-  - Reconnecting in case of network issues or connection drops.
-  - Handling and processing received tick data.
+Required instrument configuration: `instrument_token`, `instrument_details` (broker symbol and exchange),
+positive integer `lot_size`, positive finite `brick_size` (default 5), and `trade_side` (BUY/SELL/BOTH).
+Legacy configuration fields are accepted but do not drive trading. Configuration changes take effect on a fresh run.
 
-### 2. **Candle Aggregation**
-- Implements the `CandleAggregator` class to:
-  - Aggregate tick data into **OHLC (Open-High-Low-Close)** candles at configurable time intervals.
-  - Save aggregated candles to JSON files, ensuring session persistence and traceability.
-  - Support multiple instruments, each with its dedicated candle aggregator.
+## Operation
 
-### 3. **Trading Strategy Execution**
-- Analyzes aggregated candle data to generate **buy/sell signals**.
-- Allows customizable trading strategies, including:
-  - Percentage-based calculations for entry/exit signals.
-  - Custom trailing stop-loss updates to lock in profits dynamically.
-  - Reverse order mechanisms for adapting to market trends after a stop-loss is hit.
-- Supports **user-defined trade sides**:
-  - `"BOTH"`: Enables bi-directional trading with reverse orders.
-  - `"BUY"`: Restricts trading to BUY positions only.
-  - `"SELL"`: Restricts trading to SELL positions only.
+Install `requirements.txt`, configure Kite credentials through the environment / `.env`, and configure
+MongoDB in `algotraderapp/product_setting.py`. Run `python manage.py runserver`.
+The existing login, instrument configuration, start and stop APIs live under `/algotraderapp/`.
+The dashboard is `/algotraderapp/price-action/` and refreshes every second.
 
-### 4. **Order Management**
-- Integrates order placement via the **KiteConnect API** with support for:
-  - Market orders.
-  - Stop-loss and trailing stop-loss updates.
-  - Reverse orders based on stop-loss triggers (when `trade_side` is set to `"BOTH"`).
-- Tracks active orders to prevent duplicate executions and ensure controlled trading.
+Bricks are collected from 09:15:10 inclusive to 15:15 exclusive IST. Raw received ticks are
+logged even outside that window. The end of the window and the stop API do not square off positions.
+The stop API also stops its Docker container, falling back to process termination if Docker stop fails,
+because closing the WebSocket alone has been unreliable in deployment. Broker positions remain open.
+A fresh run refuses configured instruments with
+existing broker positions or nonterminal orders; reconcile those in the broker account first.
 
-### 5. **Profit and Loss Calculation**
-- Computes both **realized** and **unrealized** profits/losses for the trading day.
-- Monitors cumulative profit/loss and stops trading when a predefined threshold is reached.
-- Includes extensive logging for profit/loss calculations to ensure transparency and debugging ease.
-- Includes a feature to calculate cumulative profit across multiple instruments based on user-defined exit thresholds.
-  
-### 6. **Error Handling and Logging**
-- Implements structured error handling for:
-  - WebSocket errors and reconnection logic.
-  - Data validation and processing errors (e.g., missing fields in tick data).
-  - Order placement and strategy evaluation issues.
-- Comprehensive logging for:
-  - WebSocket connection events.
-  - Tick data processing and candle updates.
-  - Strategy execution and order placements.
-  - Profit/loss tracking and daily trade closures.
+Orders are tracked through Kite order updates with order-history polling on received ticks as fallback.
+Pending orders block duplicate submissions. Rejected/cancelled orders or uncertain placement responses
+halt execution for that instrument; inspect the broker account and logs before restarting. Actual partial
+fills are tracked. State is process-local: run a single application process and do not run a second bot
+on the same configured instruments. Fresh runs start flat; network reconnects retain the current state.
 
----
+## Logs and persistence
 
-## **Architecture**
+`bot_logs/session.log` records completed bricks, decision reasons, position state, exact order payloads,
+order IDs, responses, fill updates, broker errors and WebSocket lifecycle events. Authentication credentials
+are not included in order payload logging. Raw ticks are in `raw_ticks/*.jsonl` (100 MiB parts, 2 GiB total cap).
+Brick history is stored as `<token>_price_action_bricks.json`.
 
-### **Main Components**
-1. **`CandleAggregator`:**
-   - Handles tick data aggregation and candle management.
-   - Implements trading strategies and stop-loss logic.
+An explicit fresh start clears prior bot logs, known legacy bot log files, raw tick files and brick history.
+Automatic network reconnects do not clear logs. Unrelated user files are preserved.
 
-2. **`WebSocketHandler`:**
-   - Manages WebSocket connections for streaming real-time tick data.
-   - Handles reconnection logic and processes tick data using `CandleAggregator`.
+## Verification
 
-### **External Dependencies**
-- **KiteConnect**: For accessing market data, placing orders, and managing trades.
-- **Redis**: (Optional) For caching or state management, though not actively used in the provided script.
-- **Python Libraries**: Standard and third-party libraries for computations, file handling, logging, and asynchronous operations.
+`python manage.py test algotraderapp`
 
----
-
-## **Getting Started**
-
-### **Prerequisites**
-- Python 3.x installed.
-- Django framework set up in your environment.
-- API key and access token for KiteConnect.
-- Optional: Redis server for advanced caching.
-
-### **Installation**
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/trading-automation.git
-   cd no_indicator_bot
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Configure your API credentials in the appropriate settings file.
-4. Run the Django application:
-   ```bash
-   python manage.py runserver
-   ```
-
----
-
-## **Usage**
-1. Define your trading instruments, time intervals, and strategies in the configuration using APIs.
-2. Start the WebSocket connection to receive real-time tick data.
-3. Monitor logs for detailed trade activity, including profit/loss updates, order placements, and stop-loss adjustments.
-
----
-
-## **Advantages**
-- **Automated Trading:** Executes trades autonomously, reducing manual effort.
-- **Customizable Strategies:** Easily adapt strategies to changing market conditions.
-- **Real-time Data Processing:** Leverages real-time data for timely trade decisions.
-- **Robust Logging and Debugging:** Tracks all key events for transparency and troubleshooting.
-
----
-
-## **Contributing**
-Feel free to fork this repository, submit issues, or create pull requests for new features or bug fixes.
-
-### **Probable Enhancement: Using Redis for Candle Management**
-The current implementation uses JSON files to store and read candle data. While functional, this approach may introduce latency in scenarios with high-frequency data or when processing large datasets. 
-
-**Proposed Enhancement**:
-- **Redis Integration**: Replace JSON-based storage with Redis to manage candle data.
-- **Benefits**:
-  1. **Faster Reads and Writes**: Redis operates in-memory, providing significantly faster operations compared to file-based storage.
-  2. **Scalability**: Handles higher volumes of tick data efficiently, making it suitable for high-frequency trading scenarios.
-  3. **Reduced I/O Overhead**: Minimizes disk I/O operations, enhancing overall performance.
-  4. **Data Persistence Options**: Redis offers configurable persistence for long-term storage needs.
-  
-**Implementation Steps**:
-1. Use Redis Hashes to store OHLC candles for each instrument.
-   - Key: `instrument_token:timeframe`
-   - Fields: `open`, `high`, `low`, `close`, `volume`, etc.
-2. Modify the `CandleAggregator` class to interact with Redis instead of JSON.
-3. Utilize Redis pipelines or transactions to handle bulk updates efficiently.
-4. Incorporate expiry mechanisms (e.g., time-to-live for keys) to clean up outdated data automatically.
-
-This enhancement would align the application with real-time trading demands and make it more robust for live trading environments.
-
----
-## **License**
-This project is licensed under the [MIT License](LICENSE).
+Tests use mocked broker calls and temporary files; they do not submit live orders.

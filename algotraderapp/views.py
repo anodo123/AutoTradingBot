@@ -18,6 +18,7 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from . import run_script
+from .brick_trading import setup_run_logging, validate_instrument
 from .price_action import brick_file_path, cleanup_price_action_files
 from .raw_ticks import cleanup_raw_tick_files
 from zoneinfo import ZoneInfo
@@ -93,9 +94,26 @@ def access_web_socket(request):
             with ws_lock:
                 # Check if WebSocket handler is already running
                 if ws_handler is None:
+                    instrument_details = view_all_added_trading_instrument()
+                    if not instrument_details:
+                        return JsonResponse({"error": "Configure at least one instrument"}, status=400)
+                    for item in instrument_details:
+                        validate_instrument(item)
+                    # A fresh run must not assume an existing broker position is flat.
+                    configured = {(i['instrument_details']['exchange'], i['instrument_details']['tradingsymbol']) for i in instrument_details}
+                    setup_run_logging(Path.cwd())
+                    logging.info("Broker positions request for fresh-start reconciliation")
+                    positions = kite.positions()['net']
+                    logging.info("Broker positions response: %s", positions)
+                    logging.info("Broker orders request for fresh-start reconciliation")
+                    orders = kite.orders()
+                    logging.info("Broker orders response: %s", orders)
+                    if any((p['exchange'], p['tradingsymbol']) in configured and p['quantity'] for p in positions) or any(
+                        (o['exchange'], o['tradingsymbol']) in configured and o['status'] not in ('COMPLETE', 'CANCELLED', 'REJECTED') for o in orders):
+                        return JsonResponse({"error": "Existing positions or pending orders for configured instruments must be reconciled before a fresh run"}, status=409)
+                    logging.info("Fresh run starting; configured instruments=%s", instrument_details)
                     cleanup_price_action_files(directory=".")
                     cleanup_raw_tick_files(base_directory=".")
-                    instrument_details = view_all_added_trading_instrument()
                     ws_handler = run_script.WebSocketHandler(kite, instrument_details)
                     threading.Thread(target=ws_handler.run_websocket).start()
                 else:
@@ -114,13 +132,6 @@ def stop_web_socket(request):
 
         logger = logging.getLogger("stop_web_socket")
         logger.setLevel(logging.INFO)
-
-        if not logger.handlers:
-            log_file_path = os.path.join(os.getcwd(), "stop_web_socket.log")
-            file_handler = logging.FileHandler(log_file_path)
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
 
         logger.info("Received request to stop WebSocket.")
 
@@ -142,12 +153,15 @@ def stop_web_socket(request):
                 ws_handler = None
                 logger.info("WebSocket handler cleared.")
                 
-                # Stop the container using Docker CLI
-                logger.info("Stopping the Docker container.")
-                container_id = os.getenv("HOSTNAME")  # Gets the container ID
+                # Preserve the container shutdown workaround: closing KiteTicker
+                # alone has not reliably stopped the WebSocket in deployment.
+                container_id = os.getenv("HOSTNAME")
+                logger.info("Stopping Docker container %s; broker positions are unchanged", container_id)
                 try:
                     subprocess.run(["docker", "stop", container_id], check=True)
                 except Exception as error:
+                    logger.error("Docker stop failed; terminating process: %s", error)
+                    logging.shutdown()
                     os._exit(1)
 
                 return JsonResponse({"status": "success", "message": "WebSocket and container stopped successfully."})
@@ -223,6 +237,7 @@ def add_trading_instrument(request):
         if not instrument_details:
             return HttpResponse("No Instrument token {} exists".format(instrument_token))
         instrument_details['expiry'] = str(instrument_details['expiry'])
+        validate_instrument(dict(instrument_token=instrument_token, lot_size=lot_size, brick_size=brick_size, trade_side=trade_side, instrument_details=instrument_details))
         result = collection.insert_one({
             "lot_size":lot_size,
             "instrument_token":instrument_token,
@@ -319,6 +334,9 @@ def update_trading_instrument(request):
         collection = database['tradeconfiguration']  # Replace 'mycollection' with your collection name
         tradeconfigurationlog_collection = database['tradeconfigurationlog']
         old_data = collection.find_one({"instrument_token":instrument_token})
+        if old_data is None:
+            return JsonResponse({"error": "Instrument not found"}, status=404)
+        validate_instrument({**old_data, **data})
         old_data['old_id'] = str(old_data['_id'])
         old_data['action'] = 'updation'
         old_data['timeofaction'] = str(datetime.datetime.now(ZoneInfo("Asia/Kolkata")))

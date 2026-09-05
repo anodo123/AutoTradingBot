@@ -25,7 +25,14 @@
     #status[data-kind="error"] { color: #fca5a5; }
     #status[data-kind="error"]::before { background: #ef4444; }
     @keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
-    #bricks { height: 430px; padding: 24px; overflow: auto; background: #111827; border: 1px solid #1f2937; border-radius: 10px; }
+    #bricks { height: 430px; padding: 24px; overflow: scroll; scrollbar-gutter: stable; scrollbar-color: #64748b #111827; background: #111827; border: 1px solid #1f2937; border-radius: 10px; }
+    .chart-controls { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .chart-controls button { padding: 8px 14px; border: 1px solid #64748b; border-radius: 6px; background: #1f2937; color: white; cursor: pointer; }
+    .chart-controls label { display: flex; align-items: center; gap: 6px; }
+    #bricks:focus-visible { outline: 2px solid #60a5fa; }
+    #bricks::-webkit-scrollbar { width: 14px; height: 14px; }
+    #bricks::-webkit-scrollbar-thumb { background: #64748b; border: 3px solid #111827; border-radius: 7px; }
+    #bricks::-webkit-scrollbar-corner { background: #111827; }
     .track { position: relative; min-height: 100%; }
     .brick { position: absolute; width: 74px; box-sizing: border-box; padding: 6px 4px; display: grid; place-content: center; text-align: center; border: 1px solid rgba(255,255,255,.24); border-radius: 3px; color: white; font-size: 12px; font-weight: 700; }
     .green { background: #15803d; }
@@ -49,13 +56,37 @@
     <span>Brick size<strong id="brickSize">—</strong></span>
     <span>Bricks<strong id="count">0</strong></span>
   </div>
-  <section id="bricks"><div class="empty">Select an instrument</div></section>
+  <div class="chart-controls">
+    <button id="older" type="button">&larr; Older</button>
+    <button id="newer" type="button">Newer &rarr;</button>
+    <button id="latest" type="button">Latest brick</button>
+    <label><input id="follow" type="checkbox"> Follow latest</label>
+    <span>Scroll sideways for history and vertically for price levels.</span>
+  </div>
+  <section id="bricks" tabindex="0" aria-label="Price bricks, scroll horizontally and vertically"><div class="empty">Select an instrument</div></section>
 </main>
 <script>
   const select = document.querySelector('#instrument');
   const bricks = document.querySelector('#bricks');
   const status = document.querySelector('#status');
   let requestRunning = false;
+  const follow = document.querySelector('#follow');
+  let lastRendered = null;
+  let previousChartHeight = 0;
+  let previousMinimum = null;
+  function showLatest() {
+    const latest = bricks.querySelector('.brick:last-child');
+    if (!latest) return;
+    bricks.scrollLeft = bricks.scrollWidth;
+    bricks.scrollTop = latest.offsetTop - bricks.clientHeight / 2 + latest.offsetHeight / 2 + 24;
+  }
+  document.querySelector('#older').onclick = () => { follow.checked = false; bricks.scrollBy({left: -bricks.clientWidth * .8}); };
+  document.querySelector('#newer').onclick = () => { follow.checked = false; bricks.scrollBy({left: bricks.clientWidth * .8}); };
+  document.querySelector('#latest').onclick = showLatest;
+  follow.onchange = () => { if (follow.checked) showLatest(); };
+  for (const event of ['wheel', 'pointerdown', 'touchstart', 'keydown']) {
+    bricks.addEventListener(event, () => { follow.checked = false; }, {passive: true});
+  }
 
   const setText = (id, value) => document.querySelector(id).textContent = value ?? '—';
 
@@ -79,13 +110,18 @@
   }
 
   function renderBricks(items) {
+    const signature = JSON.stringify(items);
+    if (signature === lastRendered) return;
+    lastRendered = signature;
+    const left = bricks.scrollLeft;
+    const top = bricks.scrollTop;
     if (!items.length) {
       bricks.innerHTML = '<div class="empty">Waiting for the first completed brick…</div>';
       return;
     }
     const prices = items.flatMap(item => [Number(item.open), Number(item.close)]);
-    const minimum = Math.min(...prices);
-    const maximum = Math.max(...prices);
+    const minimum = prices.reduce((a, b) => Math.min(a, b), Infinity);
+    const maximum = prices.reduce((a, b) => Math.max(a, b), -Infinity);
     const brickSize = Number(items[0].brick_size) || 1;
     const levelCount = Math.max(1, Math.round((maximum - minimum) / brickSize));
     const levelHeight = 54;
@@ -97,6 +133,12 @@
       const title = `${brick.type}: ${brick.open} → ${brick.close}`;
       return `<div class="brick ${brick.direction}" style="left:${index * 80}px;bottom:${bottom}px;height:${levelHeight}px" title="${title}">${brick.close}<small>${brick.type}</small></div>`;
     }).join('')}</div>`;
+    bricks.scrollLeft = left;
+    // Preserve the price level being viewed when the chart's range expands.
+    bricks.scrollTop = previousMinimum === null ? top : top + chartHeight - previousChartHeight + (minimum - previousMinimum) / brickSize * levelHeight;
+    previousChartHeight = chartHeight;
+    previousMinimum = minimum;
+    if (follow.checked) showLatest();
   }
 
   async function refresh() {
@@ -108,6 +150,7 @@
     try {
       const response = await fetch(`../api/price-action/bricks/?instrument_token=${encodeURIComponent(token)}`, { cache: 'no-store' });
       const data = await response.json();
+      if (token !== select.value) return;
       if (!response.ok) throw new Error(data.error || 'Fetch failed');
       const updatedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       status.textContent = data.running ? `Live · updated ${updatedAt}` : `Stopped · checked ${updatedAt}`;
@@ -117,7 +160,7 @@
       setText('#brickSize', data.brick_size);
       setText('#count', data.bricks.length);
       renderBricks(data.bricks);
-      bricks.scrollLeft = bricks.scrollWidth;
+
     } catch (error) {
       showError(error.message);
     } finally {
@@ -126,6 +169,11 @@
   }
 
   select.addEventListener('change', () => {
+    lastRendered = null;
+    previousChartHeight = 0;
+    previousMinimum = null;
+    bricks.scrollLeft = 0;
+    bricks.scrollTop = 0;
     bricks.innerHTML = '<div class="empty">Waiting for data…</div>';
     refresh();
   });

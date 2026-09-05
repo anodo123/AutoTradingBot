@@ -203,3 +203,123 @@ class PriceActionApiTests(SimpleTestCase):
         response = self.client.get("/algotraderapp/api/price-action/instruments/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["instruments"][0]["brick_size"], "2.5")
+
+
+class BrickTradingTests(SimpleTestCase):
+    def trader(self, side='BOTH'):
+        from .brick_trading import BrickTrader
+        kite = Mock()
+        kite.place_order.side_effect = [str(i) for i in range(1, 20)]
+        return BrickTrader(kite, dict(instrument_token='123', lot_size='10', brick_size=5,
+            trade_side=side, instrument_details=dict(tradingsymbol='TEST', exchange='NSE')))
+
+    def brick(self, trader, color):
+        trader.on_brick(dict(sequence=trader.sequence + 1, direction=color, close=105))
+
+    def fill(self, trader, status='COMPLETE', quantity=10):
+        trader.on_order_update(dict(order_id=trader.pending['order_id'], status=status, filled_quantity=quantity))
+
+    def test_both_exits_before_opposite_entry(self):
+        t = self.trader()
+        self.brick(t, 'green')
+        self.fill(t)
+        self.brick(t, 'green')
+        self.assertEqual(t.kite.place_order.call_count, 1)
+        self.brick(t, 'red')
+        self.assertEqual(t.kite.place_order.call_count, 2)
+        self.assertEqual(t.position, 10)
+        self.fill(t)
+        self.assertEqual(t.kite.place_order.call_count, 3)
+        self.fill(t)
+        self.assertEqual(t.position, -10)
+
+    def test_single_sides_exit_and_wait(self):
+        for side, color, opposite in [('BUY', 'green', 'red'), ('SELL', 'red', 'green')]:
+            t = self.trader(side)
+            self.brick(t, opposite)
+            t.kite.place_order.assert_not_called()
+            self.brick(t, color)
+            self.fill(t)
+            self.brick(t, opposite)
+            self.fill(t)
+            self.assertEqual(t.position, 0)
+            self.assertEqual(t.kite.place_order.call_count, 2)
+            self.brick(t, color)
+            self.assertEqual(t.kite.place_order.call_count, 3)
+
+    def test_pending_and_duplicate_bricks_do_not_duplicate_orders(self):
+        t = self.trader()
+        self.brick(t, 'green')
+        t.on_brick(t.brick)
+        self.brick(t, 'green')
+        self.assertEqual(t.kite.place_order.call_count, 1)
+
+    def test_rejected_exit_never_opens_opposite(self):
+        t = self.trader()
+        self.brick(t, 'green')
+        self.fill(t)
+        self.brick(t, 'red')
+        self.fill(t, 'REJECTED', 0)
+        self.assertTrue(t.halted)
+        self.assertEqual(t.position, 10)
+        self.brick(t, 'red')
+        self.assertEqual(t.kite.place_order.call_count, 2)
+
+    def test_partial_fill_and_cancellation_preserve_actual_quantity(self):
+        t = self.trader()
+        self.brick(t, 'green')
+        self.fill(t, 'OPEN', 4)
+        self.fill(t, 'CANCELLED', 4)
+        self.assertEqual(t.position, 4)
+        self.assertTrue(t.halted)
+
+    def test_timeout_halts_without_retry(self):
+        t = self.trader()
+        t.kite.place_order.side_effect = TimeoutError('timeout')
+        self.brick(t, 'green')
+        self.brick(t, 'green')
+        self.assertTrue(t.halted)
+        self.assertEqual(t.kite.place_order.call_count, 1)
+
+    def test_payload_uses_configured_quantity(self):
+        t = self.trader()
+        self.brick(t, 'red')
+        payload = t.kite.place_order.call_args.kwargs
+        self.assertEqual(payload['quantity'], 10)
+        self.assertEqual(payload['transaction_type'], 'SELL')
+        self.assertEqual(payload['product'], 'MIS')
+        self.assertEqual(payload['order_type'], 'MARKET')
+
+    def test_no_order_until_first_completed_brick(self):
+        t = self.trader()
+        with tempfile.TemporaryDirectory() as directory:
+            g = PriceActionBrickGenerator('123', 5, output_directory=directory)
+            for price in [100, 104]:
+                for brick in g.process_price(price):
+                    t.on_brick(brick)
+            t.kite.place_order.assert_not_called()
+            for brick in g.process_price(105):
+                t.on_brick(brick)
+            self.assertEqual(t.kite.place_order.call_count, 1)
+
+    def test_fresh_run_resets_logs_and_records_payload(self):
+        import logging
+        from .brick_trading import setup_run_logging
+        root = logging.getLogger()
+        original_level = root.level
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                setup_run_logging(directory)
+                t = self.trader()
+                self.brick(t, 'green')
+                path = Path(directory) / 'bot_logs' / 'session.log'
+                self.assertIn('order_request', path.read_text())
+                self.assertIn('quantity', path.read_text())
+                setup_run_logging(directory)
+                self.assertEqual(path.read_text(), '')
+                for handler in list(root.handlers):
+                    if getattr(handler, 'brick_bot_handler', False):
+                        root.removeHandler(handler)
+                        handler.close()
+        finally:
+            root.setLevel(original_level)

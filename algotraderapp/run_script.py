@@ -1,4 +1,4 @@
-"""Live price-action brick generation with no trading or order logic."""
+"""Live completed-brick trading and tick collection."""
 
 import logging
 import time
@@ -11,6 +11,7 @@ from kiteconnect import KiteTicker
 
 from .price_action import PriceActionBrickGenerator
 from .raw_ticks import RawTickLogger
+from .brick_trading import BrickTrader, validate_instrument
 
 
 MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
@@ -32,6 +33,9 @@ class WebSocketHandler:
         self.websocket_running = True
         self.kite = kite
         self.instruments = instruments or []
+        for item in self.instruments:
+            validate_instrument(item)
+        self.traders = {str(item["instrument_token"]): BrickTrader(kite, item) for item in self.instruments}
         self.instrument_tokens = [int(item["instrument_token"]) for item in self.instruments]
         self.generators = {}
         self.raw_tick_logger = RawTickLogger(self.instruments, base_directory=Path.cwd())
@@ -53,6 +57,7 @@ class WebSocketHandler:
             )
 
         self.kite_ticker = KiteTicker(kite.api_key, kite.access_token)
+        self.kite_ticker.on_order_update = self.on_order_update
         self.kite_ticker.on_ticks = self.on_ticks
         self.kite_ticker.on_connect = self.on_connect
         self.kite_ticker.on_close = self.on_close
@@ -60,7 +65,12 @@ class WebSocketHandler:
         self.kite_ticker.on_noreconnect = self.on_noreconnect
         self.kite_ticker.on_reconnect = self.on_reconnect
 
+    def on_order_update(self, ws, data):
+        for trader in self.traders.values():
+            trader.on_order_update(data)
+
     def on_connect(self, ws, response):
+        self.websocket_running = True
         logging.info("WebSocket connected; subscribing to %s", self.instrument_tokens)
         if self.instrument_tokens:
             ws.subscribe(self.instrument_tokens)
@@ -72,14 +82,20 @@ class WebSocketHandler:
                 self.raw_tick_logger.log_tick(tick)
             except (OSError, TypeError, ValueError):
                 logging.exception("Could not store raw tick for instrument %s", tick.get("instrument_token"))
+            for trader in getattr(self, "traders", {}).values():
+                trader.poll()
             if not is_collection_time():
+                logging.info("Tick skipped for bricks: outside collection window")
                 continue
             token = str(tick.get("instrument_token", ""))
             generator = self.generators.get(token)
             if generator is None or "last_price" not in tick:
                 continue
             try:
-                generator.process_price(tick["last_price"])
+                bricks = generator.process_price(tick["last_price"])
+                logging.info("Tick token=%s price=%s completed_bricks=%s", token, tick["last_price"], bricks)
+                for brick in bricks:
+                    self.traders[token].on_brick(brick)
             except (InvalidOperation, TypeError, ValueError) as error:
                 logging.error("Invalid tick for instrument %s: %s", token, error)
             except OSError:
@@ -91,8 +107,7 @@ class WebSocketHandler:
 
     def on_error(self, ws, code, reason):
         logging.error("WebSocket error (%s): %s", code, reason)
-        # Handle the error and attempt to reconnect if necessary
-        self.reconnect_websocket()
+        # KiteTicker owns automatic reconnect; preserve this run and its logs.
 
     def on_noreconnect(self, ws):
         self.websocket_running = False
@@ -118,4 +133,9 @@ class WebSocketHandler:
         return self.websocket_running
 
     def run_websocket(self):
-        self.kite_ticker.connect(threaded=True)
+        try:
+            self.kite_ticker.connect(threaded=True)
+        except Exception:
+            self.websocket_running = False
+            logging.exception("WebSocket startup failed")
+            raise
