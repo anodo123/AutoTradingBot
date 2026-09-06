@@ -315,7 +315,26 @@ class BrickTradingTests(SimpleTestCase):
                 path = Path(directory) / 'bot_logs' / 'session.log'
                 self.assertIn('order_request', path.read_text())
                 self.assertIn('quantity', path.read_text())
+                exit_path = Path(directory) / 'bot_logs' / 'exits.log'
+                self.assertEqual(exit_path.read_text(), '')  # Entries stay out of exit log.
+                self.fill(t)
+                self.brick(t, 'red')
+                self.fill(t, 'REJECTED', 0)
+                exit_log = exit_path.read_text()
+                for value in ['BRICK_REVERSAL', 'order_request', 'order_response', 'exit_result', 'REJECTED', 'quantity']:
+                    self.assertIn(value, exit_log)
+                from .brick_trading import ProfitGroup
+                grouped = self.trader()
+                ProfitGroup(5, [grouped])
+                self.brick(grouped, 'green')
+                self.fill(grouped)
+                grouped.mark_price(105)
+                self.fill(grouped)
+                exit_log = exit_path.read_text()
+                for value in ['GROUP_PROFIT_TARGET', 'total_points', 'realized_unrealized', 'COMPLETE']:
+                    self.assertIn(value, exit_log)
                 setup_run_logging(directory)
+                self.assertEqual(exit_path.read_text(), '')
                 self.assertEqual(path.read_text(), '')
                 for handler in list(root.handlers):
                     if getattr(handler, 'brick_bot_handler', False):

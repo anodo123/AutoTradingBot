@@ -60,6 +60,11 @@ def setup_run_logging(directory):
     handler.brick_bot_handler = True
     handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
     root.addHandler(handler)
+    exit_handler = logging.FileHandler(logs / 'exits.log', encoding='utf-8')
+    exit_handler.brick_bot_handler = True
+    exit_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+    exit_handler.addFilter(lambda record: getattr(record, 'exit_record', False))
+    root.addHandler(exit_handler)
     root.setLevel(logging.INFO)
 
 
@@ -71,6 +76,7 @@ class BrickTrader:
         self.details = instrument['instrument_details']
         self.quantity = int(Decimal(str(instrument['lot_size'])))
         self.side = instrument.get('trade_side', 'BOTH')
+        self.exit_context = None
         self.group = None
         self.closed_for_run = False
         self.entry_value = Decimal(0)
@@ -86,9 +92,15 @@ class BrickTrader:
         self.lock = threading.RLock()
 
     def audit(self, event, **data):
+        context = self.pending.get('exit_context') if self.pending else None
+        if event in ('exit_decision', 'group_profit_exit', 'exit_waiting'):
+            context = self.exit_context
+        context = data.pop('exit_context', context)
         logging.info(json.dumps(dict(event=event, instrument_token=self.token,
+            trading_symbol=self.details['tradingsymbol'], exchange=self.details['exchange'],
             trade_side=self.side, position=self.position, target=self.target,
-            brick=self.brick, **data), default=str))
+            brick=self.brick, exit_context=context, **data), default=str),
+            extra={'exit_record': context is not None})
 
     def on_brick(self, brick):
         with self.lock:
@@ -101,12 +113,17 @@ class BrickTrader:
             self.brick = brick
             direction = 'BUY' if brick['direction'] == 'green' else 'SELL'
             self.target = (self.quantity if direction == 'BUY' else -self.quantity) if self.side in (direction, 'BOTH') else 0
+            exposure = self.position or (self.pending['sign'] if self.pending else 0)
+            if exposure and (self.target == 0 or exposure * self.target < 0):
+                self.exit_context = dict(reason='Opposite completed brick requires closing the position',
+                                         trigger='BRICK_REVERSAL', brick=dict(brick), last_price=self.last_price)
+                self.audit('exit_decision')
             self.audit('decision', reason='Completed brick determines permitted position', direction=direction)
             self._drive()
 
     def _drive(self):
         if self.halted or self.pending:
-            self.audit('hold', reason='Execution halted or order awaiting confirmation')
+            self.audit('exit_waiting' if self.exit_context else 'hold', reason='Execution halted or order awaiting confirmation')
             return
         if self.position == self.target or (self.position and self.target and self.position * self.target > 0):
             self.audit('hold', reason='Same direction; no additional entry')
@@ -116,7 +133,8 @@ class BrickTrader:
         payload = dict(variety='regular', exchange=self.details['exchange'],
             tradingsymbol=self.details['tradingsymbol'], transaction_type='BUY' if delta > 0 else 'SELL',
             quantity=abs(delta), order_type='MARKET', product='MIS', validity='DAY', market_protection=10)
-        self.pending = dict(order_id=None, sign=1 if delta > 0 else -1, filled=0, notional=Decimal(0), quantity=abs(delta))
+        exit_context = dict(self.exit_context) if self.position and self.exit_context else None
+        self.pending = dict(exit_context=exit_context, order_id=None, sign=1 if delta > 0 else -1, filled=0, notional=Decimal(0), quantity=abs(delta))
         self.audit('order_request', action='EXIT' if self.position else 'ENTRY', payload=payload)
         try:
             order_id = self.kite.place_order(**payload)
@@ -159,11 +177,15 @@ class BrickTrader:
             status = update.get('status')
             if status in ('COMPLETE', 'REJECTED', 'CANCELLED'):
                 complete = status == 'COMPLETE' and filled == self.pending['quantity']
+                exit_context = self.pending.get('exit_context')
+                self.audit('exit_result' if exit_context else 'position_update', status=status,
+                           order_id=self.pending['order_id'], filled_quantity=filled,
+                           average_price=update.get('average_price'), complete=complete,
+                           response=update)
                 self.pending = None
-                self.audit('position_update', status=status)
                 if not complete:
                     self.halted = True
-                    self.audit('execution_halted', reason='Rejected, cancelled or incomplete order; manual reconciliation required')
+                    self.audit('execution_halted', exit_context=exit_context, reason='Rejected, cancelled or incomplete order; manual reconciliation required')
                 else:
                     if self.group:
                         self.group.evaluate()
@@ -224,6 +246,9 @@ class ProfitGroup:
             self.triggered = True
             # Freeze every target before submitting any exit requests.
             for trader in self.traders:
+                trader.exit_context = dict(reason='Combined realized and unrealized profit reached the group target',
+                    trigger='GROUP_PROFIT_TARGET', threshold=self.threshold, total_points=total,
+                    realized_unrealized=values, last_price=trader.last_price)
                 trader.closed_for_run = True
                 trader.target = 0
                 trader.audit('group_profit_exit', threshold=self.threshold, total_points=total)

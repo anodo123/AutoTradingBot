@@ -94,3 +94,12 @@ P/L checks call no broker APIs. Existing pending-order history polling and start
 reconciliation remain. Group checks use each instrument's latest available tick, including
 outside the brick collection window while connected. Detailed P/L checks and exit decisions
 are recorded in `bot_logs/session.log`.
+
+
+### Separate exit audit
+
+`bot_logs/exits.log` contains exit decisions and reasons (brick reversal or combined profit
+target), instrument/symbol, triggering brick or group P/L snapshot, request payload, order ID,
+broker updates, final fill result, and failures or waits. Each pending exit retains its original
+reason even if later bricks arrive. These records also remain in `session.log`. Fresh runs
+clear both files; automatic reconnects preserve them.
