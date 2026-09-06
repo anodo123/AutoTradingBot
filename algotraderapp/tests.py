@@ -217,7 +217,7 @@ class BrickTradingTests(SimpleTestCase):
         trader.on_brick(dict(sequence=trader.sequence + 1, direction=color, close=105))
 
     def fill(self, trader, status='COMPLETE', quantity=10):
-        trader.on_order_update(dict(order_id=trader.pending['order_id'], status=status, filled_quantity=quantity))
+        trader.on_order_update(dict(order_id=trader.pending['order_id'], status=status, filled_quantity=quantity, average_price=100))
 
     def test_both_exits_before_opposite_entry(self):
         t = self.trader()
@@ -388,3 +388,108 @@ class ConfigurableStartTests(SimpleTestCase):
                                         {'start_time': '09:20:30'}, content_type='application/json')
             self.assertEqual(response.status_code, 415)
             handler.assert_not_called()
+
+
+class LocalProfitTests(SimpleTestCase):
+    trader = BrickTradingTests.trader
+    brick = BrickTradingTests.brick
+    def update(self, t, quantity, average, status='COMPLETE'):
+        t.on_order_update(dict(order_id=t.pending['order_id'], filled_quantity=quantity,
+                               average_price=average, status=status))
+
+    def test_long_short_realized_and_unrealized_points(self):
+        for color, entry, mark, exit_price in [('green', 100, 108, 106), ('red', 100, 92, 94)]:
+            t = self.trader('BUY' if color == 'green' else 'SELL')
+            self.brick(t, color)
+            self.update(t, 10, entry)
+            t.mark_price(mark)
+            self.assertEqual(t.pnl(), (0, 8))
+            self.brick(t, 'red' if color == 'green' else 'green')
+            self.update(t, 10, exit_price)
+            self.assertEqual(t.pnl(), (6, 0))
+            t.kite.orders.assert_not_called()
+            t.kite.positions.assert_not_called()
+
+    def test_cumulative_partial_fill_average_and_duplicate(self):
+        t = self.trader('BUY')
+        self.brick(t, 'green')
+        self.update(t, 4, 100, 'OPEN')
+        self.update(t, 4, 100, 'OPEN')
+        self.update(t, 10, 103)
+        t.mark_price(113)
+        self.assertEqual(t.pnl(), (0, 10))
+        self.brick(t, 'red')
+        self.update(t, 5, 113, 'OPEN')
+        self.assertEqual(t.pnl(), (5, 5))
+        self.update(t, 10, 115)
+        self.assertEqual(t.pnl(), (12, 0))
+
+    def test_combined_target_closes_all_and_blocks_reentry(self):
+        from .brick_trading import ProfitGroup
+        a, b = self.trader(), self.trader()
+        b.token = '456'
+        group = ProfitGroup(20, [a, b])
+        for t in [a, b]:
+            self.brick(t, 'green')
+            self.update(t, 10, 100)
+        a.mark_price(112)
+        self.assertFalse(group.triggered)
+        b.mark_price(108)
+        self.assertTrue(group.triggered)
+        for t in [a, b]:
+            self.assertEqual(t.target, 0)
+            self.update(t, 10, 110)
+            self.brick(t, 'green')
+            self.assertEqual(t.position, 0)
+            self.assertEqual(t.kite.place_order.call_count, 2)
+
+    def test_group_hit_while_entry_pending_flattens_after_fill(self):
+        from .brick_trading import ProfitGroup
+        a, b = self.trader(), self.trader()
+        b.token = '456'
+        group = ProfitGroup(5, [a, b])
+        self.brick(a, 'green')
+        self.update(a, 10, 100)
+        self.brick(b, 'green')
+        a.mark_price(105)
+        self.assertTrue(group.triggered)
+        self.assertEqual(b.kite.place_order.call_count, 1)
+        self.update(b, 10, 100)
+        self.assertEqual(b.kite.place_order.call_count, 2)
+        self.assertEqual(b.kite.place_order.call_args.kwargs['transaction_type'], 'SELL')
+
+    def test_normalized_groups_and_blank_disabled(self):
+        from .brick_trading import configure_profit_groups
+        traders = {str(i): self.trader() for i in range(3)}
+        items = [dict(instrument_token='0', exit_trades_threshold_points='20'),
+                 dict(instrument_token='1', exit_trades_threshold_points='20.0'),
+                 dict(instrument_token='2', exit_trades_threshold_points='')]
+        groups = configure_profit_groups(items, traders)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0].traders), 2)
+        self.assertIsNone(traders['2'].group)
+
+
+class RequiredProfitThresholdApiTests(SimpleTestCase):
+    def test_add_requires_valid_profit_threshold_before_external_calls(self):
+        with patch('algotraderapp.views.MongoClient') as mongo, patch('algotraderapp.views.kite') as kite:
+            for value in [None, '', ' ', 'abc', '0', '-1', 'NaN', 'Infinity']:
+                data = {'instrument_token': '123', 'lot_size': '10'}
+                if value is not None:
+                    data['exit_trades_threshold_points'] = value
+                response = self.client.post('/algotraderapp/tradinginstruments/addtradinginstruments', data)
+                self.assertEqual(response.status_code, 400, value)
+                self.assertIn('exit_trades_threshold_points', response.json()['error'])
+            mongo.assert_not_called()
+            kite.instruments.assert_not_called()
+
+    def test_add_saves_positive_threshold(self):
+        with patch('algotraderapp.views.MongoClient') as mongo, patch('algotraderapp.views.kite') as kite:
+            collection = mongo.return_value.__getitem__.return_value.__getitem__.return_value
+            collection.find_one.return_value = None
+            collection.insert_one.return_value.inserted_id = 'test-id'
+            kite.instruments.return_value = [dict(instrument_token=123, tradingsymbol='TEST', exchange='NSE', expiry='')]
+            response = self.client.post('/algotraderapp/tradinginstruments/addtradinginstruments',
+                dict(instrument_token='123', lot_size='10', exit_trades_threshold_points='20.5'))
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(collection.insert_one.call_args.args[0]['exit_trades_threshold_points'], '20.5')

@@ -13,7 +13,7 @@ The `price_action_bot` branch trades completed fixed-size price bricks.
 - Same-colour continuation bricks never add to a position.
 - `lot_size` is the exact order quantity, not a multiplier of exchange lot size.
 - Orders use regular MARKET / MIS / DAY with 10% market protection (as in the previous trading branch).
-- VWAP, percentage triggers, separate stop-loss and profit/loss exits are not used.
+- VWAP, percentage triggers, separate stop-loss, loss thresholds and per-trade profit exits are not used.
 
 Required instrument configuration: `instrument_token`, `instrument_details` (broker symbol and exchange),
 positive integer `lot_size`, positive finite `brick_size` (default 5), and `trade_side` (BUY/SELL/BOTH).
@@ -69,3 +69,28 @@ Automatic network reconnects do not clear logs. Unrelated user files are preserv
 `python manage.py test algotraderapp`
 
 Tests use mocked broker calls and temporary files; they do not submit live orders.
+
+
+## Combined profit exit
+
+The Add Instrument API requires form field `exit_trades_threshold_points`.
+Missing, blank, nonnumeric, nonfinite or nonpositive values return HTTP 400 before any database or broker calls.
+Existing records without a threshold retain brick-only behavior until updated. Numerically equal values
+(e.g. `20` and `20.0`) group instruments together. Configuration applies on the next fresh run.
+
+Confirmed order fills maintain entry cost and realized points locally. Each latest tick
+updates unrealized points. The group sums realized plus unrealized points and, at or above
+the threshold, freezes all entries for the run and submits exits for its positions.
+Pending orders must settle before their remaining position can be flattened. Execution
+errors/uncertain orders retain the existing halt and require broker reconciliation.
+
+P/L is gross points, not currency and not multiplied by order quantity. Partial fills
+contribute proportionally to configured quantity, using cumulative broker fill averages
+without counting duplicate updates twice. Full-quantity trades contribute ordinary price
+ differences. Charges are excluded. The ledger covers this run's fills only, not earlier
+trades in the account; it resets on a fresh run and survives network reconnects in memory.
+
+P/L checks call no broker APIs. Existing pending-order history polling and startup broker
+reconciliation remain. Group checks use each instrument's latest available tick, including
+outside the brick collection window while connected. Detailed P/L checks and exit decisions
+are recorded in `bot_logs/session.log`.

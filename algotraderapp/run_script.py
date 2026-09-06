@@ -12,7 +12,7 @@ from kiteconnect import KiteTicker
 
 from .price_action import PriceActionBrickGenerator
 from .raw_ticks import RawTickLogger
-from .brick_trading import BrickTrader, validate_instrument
+from .brick_trading import BrickTrader, validate_instrument, configure_profit_groups
 
 
 MARKET_TIMEZONE = ZoneInfo("Asia/Kolkata")
@@ -52,6 +52,7 @@ class WebSocketHandler:
         for item in self.instruments:
             validate_instrument(item)
         self.traders = {str(item["instrument_token"]): BrickTrader(kite, item) for item in self.instruments}
+        self.profit_groups = configure_profit_groups(self.instruments, self.traders)
         self.instrument_tokens = [int(item["instrument_token"]) for item in self.instruments]
         self.generators = {}
         self.raw_tick_logger = RawTickLogger(self.instruments, base_directory=Path.cwd())
@@ -98,6 +99,12 @@ class WebSocketHandler:
                 self.raw_tick_logger.log_tick(tick)
             except (OSError, TypeError, ValueError):
                 logging.exception("Could not store raw tick for instrument %s", tick.get("instrument_token"))
+            marked = getattr(self, "traders", {}).get(str(tick.get('instrument_token', '')))
+            if marked is not None and 'last_price' in tick:
+                try:
+                    marked.mark_price(tick['last_price'])
+                except (ValueError, InvalidOperation):
+                    logging.exception('Invalid price for local P/L')
             for trader in getattr(self, "traders", {}).values():
                 trader.poll()
             if not is_collection_time(start_time=getattr(self, "collection_start", COLLECTION_START)):

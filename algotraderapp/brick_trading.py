@@ -7,7 +7,18 @@ from decimal import Decimal
 from pathlib import Path
 
 
+def profit_threshold(item):
+    value = item.get('exit_trades_threshold_points')
+    if value in (None, ''):
+        return None
+    value = Decimal(str(value))
+    if not value.is_finite() or value <= 0:
+        raise ValueError('exit_trades_threshold_points must be finite and positive, or blank to disable')
+    return value
+
+
 def validate_instrument(item):
+    profit_threshold(item)
     quantity = Decimal(str(item.get('lot_size', '')))
     size = Decimal(str(item.get('brick_size', 5)))
     if not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value():
@@ -60,6 +71,11 @@ class BrickTrader:
         self.details = instrument['instrument_details']
         self.quantity = int(Decimal(str(instrument['lot_size'])))
         self.side = instrument.get('trade_side', 'BOTH')
+        self.group = None
+        self.closed_for_run = False
+        self.entry_value = Decimal(0)
+        self.realized = Decimal(0)
+        self.last_price = None
         self.position = 0
         self.target = 0
         self.pending = None
@@ -76,6 +92,9 @@ class BrickTrader:
 
     def on_brick(self, brick):
         with self.lock:
+            if self.closed_for_run:
+                self.audit('hold', reason='Combined profit target reached; entries disabled for this run')
+                return
             if brick['sequence'] <= self.sequence:
                 return
             self.sequence = brick['sequence']
@@ -97,7 +116,7 @@ class BrickTrader:
         payload = dict(variety='regular', exchange=self.details['exchange'],
             tradingsymbol=self.details['tradingsymbol'], transaction_type='BUY' if delta > 0 else 'SELL',
             quantity=abs(delta), order_type='MARKET', product='MIS', validity='DAY', market_protection=10)
-        self.pending = dict(order_id=None, sign=1 if delta > 0 else -1, filled=0, quantity=abs(delta))
+        self.pending = dict(order_id=None, sign=1 if delta > 0 else -1, filled=0, notional=Decimal(0), quantity=abs(delta))
         self.audit('order_request', action='EXIT' if self.position else 'ENTRY', payload=payload)
         try:
             order_id = self.kite.place_order(**payload)
@@ -118,8 +137,25 @@ class BrickTrader:
             filled = int(update.get('filled_quantity', 0))
             if filled < self.pending['filled']:
                 return
-            self.position += self.pending['sign'] * (filled - self.pending['filled'])
+            delta = filled - self.pending['filled']
+            if delta:
+                average = Decimal(str(update.get('average_price', 0)))
+                if not average.is_finite() or average <= 0:
+                    self.audit('fill_price_unavailable', response=update)
+                    return  # Keep pending; order-history fallback can supply the fill price.
+                notional = average * filled
+                fill_value = notional - self.pending['notional']
+                if not self.position or self.position * self.pending['sign'] > 0:
+                    self.entry_value += fill_value
+                else:
+                    basis = self.entry_value * Decimal(delta) / abs(self.position)
+                    self.realized += (fill_value - basis) * (1 if self.position > 0 else -1) / self.quantity
+                    self.entry_value -= basis
+                self.pending['notional'] = notional
+            self.position += self.pending['sign'] * delta
             self.pending['filled'] = filled
+            if self.group:
+                self.group.evaluate()
             status = update.get('status')
             if status in ('COMPLETE', 'REJECTED', 'CANCELLED'):
                 complete = status == 'COMPLETE' and filled == self.pending['quantity']
@@ -129,7 +165,24 @@ class BrickTrader:
                     self.halted = True
                     self.audit('execution_halted', reason='Rejected, cancelled or incomplete order; manual reconciliation required')
                 else:
+                    if self.group:
+                        self.group.evaluate()
                     self._drive()
+
+    def pnl(self):
+        unrealized = Decimal(0)
+        if self.position and self.last_price is not None:
+            unrealized = (self.last_price * abs(self.position) - self.entry_value) * (1 if self.position > 0 else -1) / self.quantity
+        return self.realized, unrealized
+
+    def mark_price(self, price):
+        with self.lock:
+            price = Decimal(str(price))
+            if not price.is_finite() or price <= 0:
+                raise ValueError('Tick price must be finite and positive')
+            self.last_price = price
+            if self.group:
+                self.group.evaluate()
 
     def poll(self):
         with self.lock:
@@ -145,3 +198,43 @@ class BrickTrader:
                     self.on_order_update(history[-1])
             except Exception as error:
                 self.audit('order_history_error', error=str(error))
+
+
+class ProfitGroup:
+    """Per-run points ledger. All members share one lock for atomic exit decisions."""
+    def __init__(self, threshold, traders):
+        self.threshold = threshold
+        self.traders = traders
+        self.triggered = False
+        self.lock = threading.RLock()
+        for trader in traders:
+            trader.group = self
+            trader.lock = self.lock
+
+    def evaluate(self):
+        with self.lock:
+            if self.triggered:
+                return
+            values = {t.token: t.pnl() for t in self.traders}
+            total = sum((r + u for r, u in values.values()), Decimal(0))
+            logging.info(json.dumps(dict(event='group_profit_check', threshold=self.threshold,
+                total_points=total, realized_unrealized=values), default=str))
+            if total < self.threshold:
+                return
+            self.triggered = True
+            # Freeze every target before submitting any exit requests.
+            for trader in self.traders:
+                trader.closed_for_run = True
+                trader.target = 0
+                trader.audit('group_profit_exit', threshold=self.threshold, total_points=total)
+            for trader in self.traders:
+                trader._drive()  # Pending fills finish first, then flatten; halted orders need reconciliation.
+
+
+def configure_profit_groups(instruments, traders):
+    groups = {}
+    for item in instruments:
+        threshold = profit_threshold(item)
+        if threshold is not None:
+            groups.setdefault(threshold, []).append(traders[str(item['instrument_token'])])
+    return [ProfitGroup(threshold, members) for threshold, members in groups.items()]

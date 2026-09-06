@@ -18,7 +18,7 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from . import run_script
-from .brick_trading import setup_run_logging, validate_instrument
+from .brick_trading import setup_run_logging, validate_instrument, profit_threshold
 from .price_action import brick_file_path, cleanup_price_action_files
 from .raw_ticks import cleanup_raw_tick_files
 from zoneinfo import ZoneInfo
@@ -26,6 +26,7 @@ import logging
 from django.http import JsonResponse
 from rest_framework.decorators import api_view
 import subprocess
+from decimal import InvalidOperation
 
 # Global variable to hold the WebSocket handler
 ws_handler = None
@@ -221,6 +222,11 @@ def add_trading_instrument(request):
         lot_size = request.POST.get('lot_size', '')
         instrument_token = request.POST['instrument_token']
         exit_trades_threshold_points = request.POST.get('exit_trades_threshold_points', '')
+        try:
+            if profit_threshold({'exit_trades_threshold_points': exit_trades_threshold_points}) is None:
+                raise ValueError('exit_trades_threshold_points is required')
+        except (ValueError, InvalidOperation):
+            return JsonResponse({'error': 'exit_trades_threshold_points is required and must be a positive finite number'}, status=400)
         loss_trades_threshold_points = request.POST.get('loss_trades_threshold_points', '')
         per_trade_exit_trades_threshold_points = request.POST.get('per_trade_exit_trades_threshold_points', '')
         trade_calculation_percentage = request.POST.get('trade_calculation_percentage', '')
@@ -244,7 +250,7 @@ def add_trading_instrument(request):
         if not instrument_details:
             return HttpResponse("No Instrument token {} exists".format(instrument_token))
         instrument_details['expiry'] = str(instrument_details['expiry'])
-        validate_instrument(dict(instrument_token=instrument_token, lot_size=lot_size, brick_size=brick_size, trade_side=trade_side, instrument_details=instrument_details))
+        validate_instrument(dict(instrument_token=instrument_token, lot_size=lot_size, brick_size=brick_size, trade_side=trade_side, instrument_details=instrument_details, exit_trades_threshold_points=exit_trades_threshold_points))
         result = collection.insert_one({
             "lot_size":lot_size,
             "instrument_token":instrument_token,
