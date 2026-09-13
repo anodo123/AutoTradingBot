@@ -17,8 +17,20 @@ def profit_threshold(item):
     return value
 
 
+def first_loss_threshold(item):
+    value = item.get('first_loss_exit_threshold_points')
+    if value in (None, ''):
+        return None
+    value = Decimal(str(value))
+    initial = profit_threshold(item)
+    if not value.is_finite() or value <= 0 or initial is None or value >= initial:
+        raise ValueError('first_loss_exit_threshold_points must be positive and below exit_trades_threshold_points')
+    return value
+
+
 def validate_instrument(item):
     profit_threshold(item)
+    first_loss_threshold(item)
     quantity = Decimal(str(item.get('lot_size', '')))
     size = Decimal(str(item.get('brick_size', 5)))
     if not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value():
@@ -81,6 +93,7 @@ class BrickTrader:
         self.closed_for_run = False
         self.entry_value = Decimal(0)
         self.realized = Decimal(0)
+        self.position_realized = Decimal(0)
         self.last_price = None
         self.position = 0
         self.target = 0
@@ -167,11 +180,17 @@ class BrickTrader:
                     self.entry_value += fill_value
                 else:
                     basis = self.entry_value * Decimal(delta) / abs(self.position)
-                    self.realized += (fill_value - basis) * (1 if self.position > 0 else -1) / self.quantity
+                    points = (fill_value - basis) * (1 if self.position > 0 else -1) / self.quantity
+                    self.realized += points
+                    self.position_realized += points
                     self.entry_value -= basis
                 self.pending['notional'] = notional
             self.position += self.pending['sign'] * delta
             self.pending['filled'] = filled
+            if delta and self.position == 0:
+                if self.group and self.position_realized < 0:
+                    self.group.on_loss(self, self.position_realized)
+                self.position_realized = Decimal(0)
             if self.group:
                 self.group.evaluate()
             status = update.get('status')
@@ -224,7 +243,10 @@ class BrickTrader:
 
 class ProfitGroup:
     """Per-run points ledger. All members share one lock for atomic exit decisions."""
-    def __init__(self, threshold, traders):
+    def __init__(self, threshold, traders, fallback=None):
+        self.initial_threshold = threshold
+        self.fallback = fallback
+        self.loss_switched = False
         self.threshold = threshold
         self.traders = traders
         self.triggered = False
@@ -232,6 +254,17 @@ class ProfitGroup:
         for trader in traders:
             trader.group = self
             trader.lock = self.lock
+
+    def on_loss(self, trader, loss_points):
+        with self.lock:
+            if self.triggered or self.loss_switched or self.fallback is None:
+                return
+            self.loss_switched = True
+            self.threshold = self.fallback
+            trader.audit('first_loss_threshold_switch', exit_context=dict(
+                trigger='FIRST_LOSS_THRESHOLD', reason='First fully closed losing position lowers group target',
+                initial_threshold=self.initial_threshold, active_threshold=self.threshold,
+                closed_position_points=loss_points, group_members=[t.token for t in self.traders]))
 
     def evaluate(self):
         with self.lock:
@@ -262,4 +295,10 @@ def configure_profit_groups(instruments, traders):
         threshold = profit_threshold(item)
         if threshold is not None:
             groups.setdefault(threshold, []).append(traders[str(item['instrument_token'])])
-    return [ProfitGroup(threshold, members) for threshold, members in groups.items()]
+    result = []
+    for threshold, members in groups.items():
+        values = {first_loss_threshold(item) for item in instruments if profit_threshold(item) == threshold}
+        if len(values) != 1:
+            raise ValueError('All instruments sharing exit_trades_threshold_points must use the same first_loss_exit_threshold_points')
+        result.append(ProfitGroup(threshold, members, values.pop()))
+    return result

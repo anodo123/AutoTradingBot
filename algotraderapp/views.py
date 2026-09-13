@@ -18,7 +18,7 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from . import run_script
-from .brick_trading import setup_run_logging, validate_instrument, profit_threshold
+from .brick_trading import setup_run_logging, validate_instrument, profit_threshold, first_loss_threshold
 from .price_action import brick_file_path, cleanup_price_action_files
 from .raw_ticks import cleanup_raw_tick_files
 from zoneinfo import ZoneInfo
@@ -129,6 +129,8 @@ def access_web_socket(request):
             return JsonResponse({"Websocket Started": True,"access_token": access_token, "start_time": start_time, "end_time": "15:15:00", "timezone": "Asia/Kolkata"})
         else:
             return JsonResponse({"Session Not Started, Please Generate Session":True},status = status.HTTP_412_PRECONDITION_FAILED)
+    except (ValueError, InvalidOperation) as error:
+        return JsonResponse({'error': str(error)}, status=400)
     except Exception as error:
         return JsonResponse({"Some Error Occurred": str(error)}, status=500)
     
@@ -227,6 +229,12 @@ def add_trading_instrument(request):
                 raise ValueError('exit_trades_threshold_points is required')
         except (ValueError, InvalidOperation):
             return JsonResponse({'error': 'exit_trades_threshold_points is required and must be a positive finite number'}, status=400)
+        first_loss_exit_threshold_points = request.POST.get('first_loss_exit_threshold_points', '')
+        try:
+            first_loss_threshold(dict(exit_trades_threshold_points=exit_trades_threshold_points,
+                                      first_loss_exit_threshold_points=first_loss_exit_threshold_points))
+        except (ValueError, InvalidOperation) as error:
+            return JsonResponse({'error': str(error)}, status=400)
         loss_trades_threshold_points = request.POST.get('loss_trades_threshold_points', '')
         per_trade_exit_trades_threshold_points = request.POST.get('per_trade_exit_trades_threshold_points', '')
         trade_calculation_percentage = request.POST.get('trade_calculation_percentage', '')
@@ -255,6 +263,7 @@ def add_trading_instrument(request):
             "lot_size":lot_size,
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
+            "first_loss_exit_threshold_points":first_loss_exit_threshold_points,
             "loss_trades_threshold_points":loss_trades_threshold_points,
             "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
@@ -267,6 +276,7 @@ def add_trading_instrument(request):
             "lot_size":lot_size,
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
+            "first_loss_exit_threshold_points":first_loss_exit_threshold_points,
              "loss_trades_threshold_points":loss_trades_threshold_points,
             "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
@@ -337,7 +347,7 @@ def update_trading_instrument(request):
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}/")
         data = {}
         for key,value in request.POST.items():
-            if key not in ["lot_size","instrument_token","loss_trades_threshold_points","exit_trades_threshold_points","per_trade_exit_trades_threshold_points","trade_calculation_percentage","timeframe","trade_side","brick_size"]:
+            if key not in ["first_loss_exit_threshold_points","lot_size","instrument_token","loss_trades_threshold_points","exit_trades_threshold_points","per_trade_exit_trades_threshold_points","trade_calculation_percentage","timeframe","trade_side","brick_size"]:
                 return JsonResponse({"Invalid Parameter":key})
             else:
                 if key =="instrument_token":
@@ -349,7 +359,10 @@ def update_trading_instrument(request):
         old_data = collection.find_one({"instrument_token":instrument_token})
         if old_data is None:
             return JsonResponse({"error": "Instrument not found"}, status=404)
-        validate_instrument({**old_data, **data})
+        try:
+            validate_instrument({**old_data, **data})
+        except (ValueError, InvalidOperation) as error:
+            return JsonResponse({'error': str(error)}, status=400)
         old_data['old_id'] = str(old_data['_id'])
         old_data['action'] = 'updation'
         old_data['timeofaction'] = str(datetime.datetime.now(ZoneInfo("Asia/Kolkata")))

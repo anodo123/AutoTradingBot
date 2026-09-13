@@ -512,3 +512,81 @@ class RequiredProfitThresholdApiTests(SimpleTestCase):
                 dict(instrument_token='123', lot_size='10', exit_trades_threshold_points='20.5'))
             self.assertEqual(response.status_code, 200)
             self.assertEqual(collection.insert_one.call_args.args[0]['exit_trades_threshold_points'], '20.5')
+
+
+class FirstLossThresholdTests(SimpleTestCase):
+    trader = BrickTradingTests.trader
+    brick = BrickTradingTests.brick
+    update = LocalProfitTests.update
+
+    def test_loss_switch_preserves_cumulative_loss_and_hits_new_target(self):
+        from .brick_trading import ProfitGroup
+        t = self.trader('BUY')
+        g = ProfitGroup(15, [t], fallback=5)
+        self.brick(t, 'green')
+        self.update(t, 10, 100)
+        self.brick(t, 'red')
+        self.update(t, 5, 96, 'OPEN')
+        self.assertEqual(g.threshold, 15)
+        self.update(t, 10, 96)
+        self.assertEqual(g.threshold, 5)
+        self.assertEqual(t.realized, -4)
+        self.brick(t, 'green')
+        self.update(t, 10, 100)
+        t.mark_price(108)
+        self.assertFalse(g.triggered)
+        t.mark_price(109)
+        self.assertTrue(g.triggered)
+        self.assertEqual(t.target, 0)
+
+    def test_profitable_position_does_not_switch_and_first_later_loss_does(self):
+        from .brick_trading import ProfitGroup
+        t = self.trader('BUY')
+        g = ProfitGroup(15, [t], fallback=6)
+        for exit_price, threshold in [(102, 15), (99, 6), (98, 6)]:
+            self.brick(t, 'green')
+            self.update(t, 10, 100)
+            self.brick(t, 'red')
+            self.update(t, 10, exit_price)
+            self.assertEqual(g.threshold, threshold)
+        self.assertEqual(t.realized, -1)
+
+    def test_short_loss_switches_whole_group_without_merging_other_group(self):
+        from .brick_trading import ProfitGroup
+        a, b, other = self.trader('SELL'), self.trader(), self.trader()
+        a.token, b.token = '1', '2'
+        g = ProfitGroup(15, [a, b], fallback=5)
+        independent = ProfitGroup(5, [other])
+        self.brick(a, 'red')
+        self.update(a, 10, 100)
+        self.brick(a, 'green')
+        self.update(a, 10, 104)
+        self.assertEqual(b.group.threshold, 5)
+        self.assertIsNot(b.group, independent)
+        self.assertFalse(independent.triggered)
+
+    def test_blank_fallback_preserves_existing_behavior(self):
+        from .brick_trading import ProfitGroup
+        t = self.trader('BUY')
+        g = ProfitGroup(15, [t])
+        self.brick(t, 'green')
+        self.update(t, 10, 100)
+        self.brick(t, 'red')
+        self.update(t, 10, 96)
+        self.assertEqual(g.threshold, 15)
+
+    def test_invalid_fallback_rejected_by_add_api(self):
+        with patch('algotraderapp.views.MongoClient') as mongo:
+            for value in ['0', '-1', '15', '20', 'NaN', 'Infinity', 'abc']:
+                response = self.client.post('/algotraderapp/tradinginstruments/addtradinginstruments',
+                    dict(instrument_token='123', lot_size='10', exit_trades_threshold_points='15',
+                         first_loss_exit_threshold_points=value))
+                self.assertEqual(response.status_code, 400, value)
+            mongo.assert_not_called()
+
+    def test_group_fallback_must_match(self):
+        from .brick_trading import configure_profit_groups
+        items = [dict(instrument_token=str(i), exit_trades_threshold_points='15',
+                      first_loss_exit_threshold_points=str(v)) for i, v in [(1, 5), (2, 6)]]
+        with self.assertRaises(ValueError):
+            configure_profit_groups(items, {'1': self.trader(), '2': self.trader()})

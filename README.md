@@ -103,3 +103,22 @@ target), instrument/symbol, triggering brick or group P/L snapshot, request payl
 broker updates, final fill result, and failures or waits. Each pending exit retains its original
 reason even if later bricks arrive. These records also remain in `session.log`. Fresh runs
 clear both files; automatic reconnects preserve them.
+
+
+### First loss fallback target
+
+Optional Add/Update Instrument form field: `first_loss_exit_threshold_points`.
+Example: `exit_trades_threshold_points=15`, `first_loss_exit_threshold_points=5`.
+The first fully closed losing position in the group switches its target from 15 to 5,
+once per run. Unrealized losses and partially closed positions do not trigger it.
+Earlier realized P/L stays in the total: after -4 points, +9 points are needed to reach +5.
+A profitable/breakeven exit does not trigger the switch; the first later losing exit does.
+All instruments in the original group keep their membership even after the target changes.
+Groups originally configured with 5 remain separate. A group already closed for profit stays closed.
+
+The fallback must be finite, positive and below the initial target. Blank/missing preserves
+the existing target. All instruments sharing an initial target must have the same fallback
+(or all omit it); inconsistent groups are rejected at startup. Updates apply next fresh run.
+The switch and reason are recorded in both `session.log` and `exits.log` as
+`first_loss_threshold_switch`, with original/new target, loss points and group members.
+A fresh run restores the initial target; reconnects preserve the current target.
