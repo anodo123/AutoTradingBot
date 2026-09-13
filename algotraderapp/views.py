@@ -1,3 +1,4 @@
+from .thresholds import fallback
 from django.shortcuts import render
 from .product_setting import mongo_port, mongo_url,mongo_username,mongo_password,mongo_database
 from rest_framework.decorators import api_view
@@ -197,6 +198,11 @@ def add_trading_instrument(request):
         lot_size = request.POST['lot_size']
         instrument_token = request.POST['instrument_token']
         exit_trades_threshold_points= request.POST['exit_trades_threshold_points']
+        first_loss_exit_threshold_points = request.POST.get('first_loss_exit_threshold_points', '')
+        try:
+            fallback(dict(exit_trades_threshold_points=exit_trades_threshold_points, first_loss_exit_threshold_points=first_loss_exit_threshold_points))
+        except ValueError as error:
+            return JsonResponse({'error': str(error)}, status=400)
         per_trade_exit_trades_threshold_points= request.POST['per_trade_exit_trades_threshold_points']
         trade_calculation_percentage= request.POST['trade_calculation_percentage']
         timeframe= request.POST['timeframe']
@@ -220,6 +226,7 @@ def add_trading_instrument(request):
             "lot_size":lot_size,
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
+            "first_loss_exit_threshold_points":first_loss_exit_threshold_points,
             "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
@@ -230,6 +237,7 @@ def add_trading_instrument(request):
             "lot_size":lot_size,
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
+            "first_loss_exit_threshold_points":first_loss_exit_threshold_points,
             "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
             "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
@@ -298,7 +306,7 @@ def update_trading_instrument(request):
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}/")
         data = {}
         for key,value in request.POST.items():
-            if key not in ["lot_size","instrument_token","exit_trades_threshold_points","per_trade_exit_trades_threshold_points","trade_calculation_percentage","timeframe","trade_side"]:
+            if key not in ["first_loss_exit_threshold_points","lot_size","instrument_token","exit_trades_threshold_points","per_trade_exit_trades_threshold_points","trade_calculation_percentage","timeframe","trade_side"]:
                 return JsonResponse({"Invalid Parameter":key})
             else:
                 if key =="instrument_token":
@@ -308,6 +316,12 @@ def update_trading_instrument(request):
         collection = database['tradeconfiguration']  # Replace 'mycollection' with your collection name
         tradeconfigurationlog_collection = database['tradeconfigurationlog']
         old_data = collection.find_one({"instrument_token":instrument_token})
+        if old_data is None:
+            return JsonResponse({'error': 'Instrument not found'}, status=404)
+        try:
+            fallback({**old_data, **data})
+        except ValueError as error:
+            return JsonResponse({'error': str(error)}, status=400)
         old_data['old_id'] = str(old_data['_id'])
         old_data['action'] = 'updation'
         old_data['timeofaction'] = str(datetime.datetime.now(ZoneInfo("Asia/Kolkata")))

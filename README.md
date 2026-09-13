@@ -143,3 +143,23 @@ This enhancement would align the application with real-time trading demands and 
 ---
 ## **License**
 This project is licensed under the [MIT License](LICENSE).
+
+
+## First-loss exit threshold (single_candle_logic)
+
+Add/update instrument form-data accepts optional `first_loss_exit_threshold_points`.
+Example: initial `exit_trades_threshold_points=15`, fallback `first_loss_exit_threshold_points=5`.
+A fully closed losing position in the original group switches the active target once to 5.
+Existing realized losses remain included: -4 followed by +9 gives the new +5 target.
+Unrealized losses, rejected unfilled exits and partial closures do not trigger the switch.
+Blank/missing fallback retains previous behavior. Values must be positive, finite and below
+initial threshold. All members with the same initial threshold must configure the same fallback;
+inconsistent groups are rejected when the handler is constructed.
+
+Original group membership is retained; lowering 15 to 5 does not merge with a group originally
+configured at 5. Existing broker-based daily P/L, per-trade targets, SL and reversal behavior remain.
+Detection reuses the existing `kite.orders()` daily P/L snapshot, adding no requests. It considers
+the current day broker order history for configured symbols/exchanges (including earlier trades
+and manual fills), so a restart can rediscover an earlier loss. It does not reset the broker's
+realized P/L. The active target is shared in memory and threshold changes are logged as
+`first_loss_threshold_switch`. Group exits retain the existing per-instrument tick processing.
