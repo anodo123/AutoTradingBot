@@ -1,4 +1,10 @@
 import os
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime as _ExecutionDateTime
+from pathlib import Path
+import hashlib
+import uuid
 from .thresholds import build_groups, key as threshold_key
 import threading
 import json
@@ -26,6 +32,494 @@ from logging.handlers import RotatingFileHandler
 # )
 
 logging.basicConfig(level=logging.DEBUG)
+
+
+TERMINAL = {'COMPLETE', 'CANCELLED', 'REJECTED'}
+
+
+@dataclass
+class Position:
+    quantity: int = 0
+    average: float = 0.0
+    realized_cash: float = 0.0
+    completed_points: float = 0.0
+    cycle_quantity: int = 0
+    cycle_cash: float = 0.0
+
+    def fill(self, signed_quantity, price):
+        remaining = abs(signed_quantity)
+        sign = 1 if signed_quantity > 0 else -1
+        while remaining:
+            if self.quantity == 0 or self.quantity * sign > 0:
+                amount = abs(self.quantity)
+                self.average = (amount * self.average + remaining * price) / (amount + remaining)
+                self.cycle_quantity += remaining
+                self.quantity += sign * remaining
+                remaining = 0
+            else:
+                part = min(remaining, abs(self.quantity))
+                cash = part * (price - self.average) * (1 if self.quantity > 0 else -1)
+                self.realized_cash += cash
+                self.cycle_cash += cash
+                self.quantity += sign * part
+                remaining -= part
+                if self.quantity == 0:
+                    self.completed_points += self.cycle_cash / self.cycle_quantity
+                    self.cycle_cash = 0.0
+                    self.cycle_quantity = 0
+                    self.average = 0.0
+
+    def unrealized_points(self, price):
+        if not self.quantity:
+            return 0.0
+        return (price - self.average) * (1 if self.quantity > 0 else -1)
+
+    def daily_points(self, price):
+        if not self.cycle_quantity:
+            return self.completed_points
+        # Partial closures contribute by their fraction of the position, not once per order.
+        return self.completed_points + (self.cycle_cash +
+            self.unrealized_points(price) * abs(self.quantity)) / self.cycle_quantity
+
+
+def replay(orders):
+    positions = {}
+    for order in sorted(orders, key=lambda o: (str(o.get('order_timestamp', '')), str(o['order_id']))):
+        quantity = int(order.get('filled_quantity', order.get('quantity', 0)
+                       if order.get('status') == 'COMPLETE' else 0) or 0)
+        price = float(order.get('average_price') or 0)
+        if quantity <= 0 or not math.isfinite(price) or price <= 0:
+            continue
+        if order.get('transaction_type') not in ('BUY', 'SELL'):
+            continue
+        key = (order.get('exchange'), order.get('tradingsymbol'))
+        position = positions.setdefault(key, Position())
+        position.fill(quantity if order['transaction_type'] == 'BUY' else -quantity, price)
+    return positions
+
+
+class ExecutionEngine:
+    """One engine per account/session. REST reconciliation runs on a background worker."""
+    def __init__(self, kite, instruments, groups, state_path='trading_execution_state.json',
+                 clock=time.monotonic, day=None):
+        self.kite = kite
+        self.instruments = instruments
+        self.groups = groups
+        self.clock = clock
+        self.day = day or (lambda: _ExecutionDateTime.now(ZoneInfo('Asia/Kolkata')).date().isoformat())
+        self.session_day = self.day()
+        self.owner = hashlib.sha256((str(kite.api_key) + ':' + str(kite.access_token)).encode()).hexdigest()
+        self.path = Path(state_path) if state_path else None
+        self.lock = threading.RLock()
+        self.poll_lock = threading.Lock()
+        self.orders = {}
+        self.versions = {}
+        self.version = 0
+        self.positions = {}
+        self.prices = {}
+        self.contexts = {}
+        self.closing_groups = set()
+        self.ready = False
+        self.connected = True
+        self.next_poll = 0.0
+        self.failures = 0
+        self.last_success = None
+        self.submission_times = deque()
+        self.stop_event = threading.Event()
+        self.worker = None
+        self.persistence_error = False
+        self._load()
+
+    @staticmethod
+    def identity(item):
+        d = item['instrument_details']
+        return d['exchange'], d['tradingsymbol']
+
+    def context(self, item):
+        token = str(item['instrument_token'])
+        return self.contexts.setdefault(token, {})
+
+    def _load(self):
+        if not self.path or not self.path.exists():
+            return
+        try:
+            saved = json.loads(self.path.read_text())
+            if saved['day'] == self.session_day and saved['owner'] == self.owner:
+                self.contexts = saved['contexts']
+                for ctx in self.contexts.values():
+                    ctx['retry_at'] = 0.0  # Monotonic deadlines do not survive process restarts.
+                    ctx['cancel_sent'] = False
+                self.closing_groups = set(saved.get('closing_groups', []))
+        except Exception:
+            self.persistence_error = True
+            logging.exception('Cannot recover execution checkpoint; trading blocked')
+
+    def save(self):
+        if not self.path:
+            return
+        try:
+            tmp = self.path.with_suffix('.tmp')
+            tmp.write_text(json.dumps(dict(day=self.session_day, owner=self.owner,
+                contexts=self.contexts, closing_groups=list(self.closing_groups)), default=str))
+            os.replace(tmp, self.path)
+        except Exception:
+            self.persistence_error = True
+            logging.exception('Execution checkpoint failed; further submissions blocked')
+
+    def _merge(self, update):
+        if not update.get('order_id'):
+            return False
+        oid = str(update['order_id'])
+        old = self.orders.get(oid, {})
+        # A late OPEN snapshot must not roll a confirmed fill/terminal status backwards.
+        old_fill = int(old.get('filled_quantity', 0) or 0)
+        new_fill = int(update.get('filled_quantity', 0) or 0)
+        if new_fill < old_fill or (old.get('status') in TERMINAL and
+                update.get('status') not in TERMINAL):
+            return False
+        if old.get('exchange_update_timestamp') and update.get('exchange_update_timestamp'):
+            if str(update['exchange_update_timestamp']) < str(old['exchange_update_timestamp']):
+                return False
+        merged = {**old, **update, 'order_id': oid}
+        if merged == old:
+            return False
+        if self.ready and (new_fill > old_fill or (not old and merged.get('status') not in TERMINAL)):
+            for item in self.instruments:
+                if self.identity(item) != (merged.get('exchange'), merged.get('tradingsymbol')):
+                    continue
+                ctx = self.context(item)
+                owned = oid in (str(ctx.get('entry_id')), str(ctx.get('pending_id')))
+                owned = owned or (ctx.get('pending_tag') and merged.get('tag') == ctx['pending_tag'])
+                if not owned:
+                    ctx['blocked'] = 'External fill detected; ledger updated, automatic trading blocked'
+                    self.save()
+        self.orders[oid] = merged
+        self.version += 1
+        self.versions[oid] = self.version
+        return True
+
+    def _rebuild(self):
+        self.positions = replay(self.orders.values())
+        snapshot = list(self.orders.values())
+        for group in self.groups.values():
+            group.observe(snapshot)
+        # Non-MIS exposure cannot safely be closed by this MIS-only trading bot.
+        for item in self.instruments:
+            key = self.identity(item)
+            if any((o.get('exchange'), o.get('tradingsymbol')) == key and
+                   o.get('product', 'MIS') != 'MIS' and int(o.get('filled_quantity', 0) or 0)
+                   for o in snapshot):
+                self.context(item)['blocked'] = 'Configured symbol has non-MIS fills; reconcile manually'
+
+    def on_order_update(self, ws, data):
+        with self.lock:
+            if self._merge(data):
+                self._rebuild()
+
+    def reconcile(self):
+        """At most one account-wide history read/second; back off failures without sleeping ticks."""
+        if not self.poll_lock.acquire(False):
+            return False
+        try:
+            with self.lock:
+                now = self.clock()
+                if now < self.next_poll or self.day() != self.session_day:
+                    return False
+                self.next_poll = now + 1.0
+                version = self.version
+                bootstrap = not self.ready
+            try:
+                snapshot = self.kite.orders()
+                broker_positions = self.kite.positions()['net'] if bootstrap else None
+            except Exception:
+                with self.lock:
+                    self.failures += 1
+                    self.next_poll = self.clock() + min(60.0, 2.0 ** min(self.failures, 6))
+                logging.exception('Broker reconciliation failed; cached fills retained, retry delayed')
+                return False
+            with self.lock:
+                changed = False
+                for order in snapshot:
+                    if self.versions.get(str(order.get('order_id')), 0) <= version:
+                        changed = self._merge(order) or changed
+                if changed or bootstrap:
+                    self._rebuild()
+                if bootstrap:
+                    for item in self.instruments:
+                        key = self.identity(item)
+                        ctx = self.context(item)
+                        position = self.positions.get(key, Position())
+                        actual = sum(int(p['quantity']) for p in broker_positions
+                            if (p.get('exchange'), p.get('tradingsymbol')) == key)
+                        if actual != position.quantity:
+                            ctx['blocked'] = 'Broker position differs from daily fills (carry-in/manual exposure)'
+                        active_orders = [o for o in self.orders.values() if
+                            (o.get('exchange'), o.get('tradingsymbol')) == key and
+                            o.get('status') not in TERMINAL]
+                        if position.quantity and not ctx.get('entry_id') and not ctx.get('pending_tag'):
+                            ctx['blocked'] = 'Open position has no saved entry/stop/target context'
+                        if any(not ((ctx.get('pending_id') and str(o['order_id']) == str(ctx['pending_id'])) or
+                                    (ctx.get('pending_tag') and o.get('tag') == ctx['pending_tag']))
+                               for o in active_orders):
+                            ctx['blocked'] = 'Untracked pending broker order'
+                    self.ready = True
+                    self.save()
+                self.failures = 0
+                self.last_success = self.clock()
+                self.next_poll = self.clock() + 1.0
+                return True
+        finally:
+            self.poll_lock.release()
+
+    def start(self):
+        if self.worker:
+            return
+        def work():
+            while not self.stop_event.is_set():
+                self.reconcile()
+                self.stop_event.wait(0.25)
+        self.worker = threading.Thread(target=work, name='broker-reconciliation', daemon=True)
+        self.worker.start()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def mark(self, item, price):
+        if not math.isfinite(price) or price <= 0:
+            return
+        with self.lock:
+            self.prices[self.identity(item)] = price
+
+    def group_points(self, item):
+        group = self.groups[str_key(item['exit_trades_threshold_points'])]
+        total = 0.0
+        for key in set(group.members):
+            position = self.positions.get(key, Position())
+            if position.quantity and key not in self.prices:
+                return None
+            total += position.daily_points(self.prices.get(key, 0.0))
+        return total
+
+    def _take_submission_slot(self):
+        now = self.clock()
+        while self.submission_times and now - self.submission_times[0] >= 1.0:
+            self.submission_times.popleft()
+        if len(self.submission_times) >= 5:
+            return False
+        self.submission_times.append(now)
+        return True
+
+    def _cancel_entry(self, ctx):
+        if not ctx.get('pending_id'):
+            return
+        if ctx.get('cancel_sent') and (self.clock() < ctx.get('cancel_after', 0) or
+                self.last_success is None or self.last_success <= ctx.get('cancel_at', 0)):
+            return
+        current = self.orders.get(str(ctx['pending_id']), {})
+        if current.get('status') in TERMINAL or current.get('status') == 'CANCEL PENDING':
+            return
+        if not self._take_submission_slot():
+            return
+        ctx['cancel_sent'] = True
+        ctx['cancel_at'] = self.clock()
+        ctx['cancel_after'] = self.clock() + 2.0
+        self.save()
+        try:
+            self.kite.cancel_order(variety=self.kite.VARIETY_REGULAR, order_id=ctx['pending_id'])
+        except Exception:
+            logging.exception('Entry remainder cancellation uncertain; awaiting broker status')
+
+    def _submit(self, item, ctx, side, quantity, kind):
+        if self.persistence_error or ctx.get('pending_kind') or self.clock() < ctx.get('retry_at', 0):
+            return None
+        if not self._take_submission_slot():
+            return None
+        tag = 'at' + uuid.uuid4().hex[:18]
+        ctx.update(pending_kind=kind, pending_tag=tag, pending_id=None, cancel_sent=False)
+        self.save()  # Durable intent exists before the network call.
+        if self.persistence_error:
+            return None
+        try:
+            oid = self.kite.place_order(variety=self.kite.VARIETY_REGULAR,
+                exchange=item['instrument_details']['exchange'],
+                tradingsymbol=item['instrument_details']['tradingsymbol'],
+                transaction_type=side.upper(), quantity=int(quantity),
+                order_type=self.kite.ORDER_TYPE_MARKET, product=self.kite.PRODUCT_MIS,
+                market_protection=10, tag=tag)
+        except Exception as error:
+            if getattr(error, 'code', None) in (400, 403, 429):
+                # An explicit rejection differs from a lost/ambiguous submission response.
+                ctx.pop('pending_kind', None)
+                ctx.pop('pending_tag', None)
+                ctx.pop('pending_id', None)
+                ctx['retry_at'] = self.clock() + 2.0
+                if error.code != 429:
+                    ctx['blocked'] = 'Broker rejected submission: ' + str(error)
+                self.save()
+                logging.error('Submission rejected code=%s symbol=%s', error.code,
+                    item['instrument_details']['tradingsymbol'])
+                return None
+            # A timeout can occur after acceptance. Reconcile by tag; never blindly resubmit.
+            ctx['uncertain'] = True
+            self.save()
+            logging.exception('Submission outcome uncertain tag=%s; waiting for reconciliation', tag)
+            return None
+        ctx['pending_id'] = str(oid)
+        ctx['uncertain'] = False
+        if kind == 'entry':
+            ctx['entry_id'] = str(oid)
+        self.save()
+        logging.info('order_submitted symbol=%s id=%s side=%s quantity=%s kind=%s',
+            item['instrument_details']['tradingsymbol'], oid, side, quantity, kind)
+        return oid
+
+    def _pending(self, ctx):
+        oid = ctx.get('pending_id')
+        if not oid and ctx.get('pending_tag'):
+            matches = [o for o in self.orders.values() if o.get('tag') == ctx['pending_tag']]
+            if len(matches) == 1:
+                oid = str(matches[0]['order_id'])
+                ctx['pending_id'] = oid
+                ctx['uncertain'] = False
+                if ctx['pending_kind'] == 'entry':
+                    ctx['entry_id'] = oid
+                self.save()
+        return self.orders.get(str(oid)) if oid else None
+
+    def sync(self, a, item):
+        ctx = self.context(item)
+        pos = self.positions.get(self.identity(item), Position())
+        a.current_order_type = ('Buy' if pos.quantity > 0 else 'Sell') if pos.quantity else None
+        a.order_active = bool(pos.quantity or ctx.get('pending_kind'))
+        a.order_id = ctx.get('entry_id')
+        a.current_stop_loss = ctx.get('stop')
+        a.per_trade_candle_based_profit = ctx.get('range', a.per_trade_candle_based_profit)
+        a.close_trade_for_the_day = bool(ctx.get('closed'))
+        return ctx, pos
+
+    def process(self, a, item, price):
+        """Runs on ticks; reads local fills only. Only actual submissions/cancels use REST."""
+        with self.lock:
+            if self.stop_event.is_set() or not self.ready or self.day() != self.session_day:
+                return
+            ctx, pos = self.sync(a, item)
+            if ctx.get('blocked') or self.persistence_error:
+                return
+            group_key = str_key(item['exit_trades_threshold_points'])
+            points = self.group_points(item)
+            a.profit_threshold_points = points if points is not None else 0.0
+            if points is not None and points >= float(self.groups[group_key].active):
+                if group_key not in self.closing_groups:
+                    self.closing_groups.add(group_key)
+                    self.save()
+            closing = group_key in self.closing_groups
+            if ctx.get('closed') and not pos.quantity and not ctx.get('pending_kind'):
+                return
+            pending = self._pending(ctx) if ctx.get('pending_kind') else None
+            # Unknown/manual exposure is reflected in group P/L but must not spawn duplicate entries.
+            if pos.quantity and not ctx.get('entry_id'):
+                ctx['blocked'] = 'Unmanaged exposure requires entry/stop/target recovery'
+                self.save()
+                return
+            if pending and pending.get('status') in TERMINAL:
+                kind = ctx.pop('pending_kind')
+                ctx.pop('pending_id', None)
+                ctx.pop('pending_tag', None)
+                ctx.pop('uncertain', None)
+                ctx['retry_at'] = self.clock() + (2.0 if pending['status'] != 'COMPLETE' else 0.0)
+                if kind == 'entry' and not pos.quantity:
+                    ctx.pop('entry_id', None)
+                if kind == 'exit' and not pos.quantity:
+                    reason = ctx.pop('exit_reason', None)
+                    if closing or reason == 'day':
+                        ctx['closed'] = True
+                    elif reason == 'reverse' and a.trade_side == 'BOTH':
+                        ctx['reverse_ready'] = True
+                    elif reason == 'profit':
+                        ctx['wait_candle'] = ctx.get('exit_candle')
+                    ctx.pop('entry_id', None)
+                self.save()
+                self.sync(a, item)
+                pending = None
+                if kind == 'exit' and not pos.quantity and not ctx.get('reverse_ready'):
+                    return
+            if pos.quantity:
+                if ctx.get('stop') is None or not ctx.get('range'):
+                    ctx['blocked'] = 'Open position lacks a valid stop/target'
+                    self.save()
+                    return
+                a.update_trailing_stop_loss(self.kite, float(item['trade_calculation_percentage']), a.tradingsymbol)
+                if ctx['stop'] != a.current_stop_loss:
+                    ctx['stop'] = a.current_stop_loss
+                    self.save()
+                profit = pos.unrealized_points(price)
+                target = float(item['per_trade_exit_trades_threshold_points']) * ctx['range']
+                sl_hit = price <= ctx['stop'] if pos.quantity > 0 else price >= ctx['stop']
+                reason = 'day' if closing else ('profit' if profit >= target else ('reverse' if sl_hit else None))
+                if reason and not ctx.get('exit_reason'):
+                    ctx['exit_reason'] = reason
+                    ctx['exit_candle'] = dict(a.candles[-2]) if len(a.candles) >= 2 else None
+                    if reason == 'reverse' and len(a.candles) >= 2:
+                        candle = a.candles[-2]
+                        ctx['reverse_range'] = candle['high'] - candle['low']
+                        ctx['reverse_side'] = 'Sell' if pos.quantity > 0 else 'Buy'
+                    self.save()
+                if ctx.get('pending_kind') == 'entry' and ctx.get('exit_reason'):
+                    if pending:
+                        self._cancel_entry(ctx)
+                    return
+                if ctx.get('pending_kind'):
+                    return
+                if ctx.get('exit_reason'):
+                    self._submit(item, ctx, 'Sell' if pos.quantity > 0 else 'Buy', abs(pos.quantity), 'exit')
+                return
+            if ctx.get('pending_kind'):
+                if closing and ctx['pending_kind'] == 'entry' and pending:
+                    self._cancel_entry(ctx)
+                return
+            if closing:
+                ctx['closed'] = True
+                ctx.pop('reverse_ready', None)
+                self.save()
+                return
+            if ctx.get('entry_id'):
+                # A manual closure must clear active state and suppress an unintended reversal.
+                ctx.pop('entry_id', None)
+                ctx.pop('exit_reason', None)
+                ctx.pop('reverse_ready', None)
+                ctx['wait_candle'] = dict(a.candles[-2]) if len(a.candles) >= 2 else None
+                self.save()
+                return
+            if not self.connected or self.last_success is None or self.clock() - self.last_success > 10:
+                return  # New exposure needs a recent successful reconciliation.
+            if self.clock() < ctx.get('retry_at', 0):
+                return
+            if ctx.get('reverse_ready'):
+                side = ctx['reverse_side']
+                candle_range = ctx['reverse_range']
+                ctx.pop('reverse_ready')
+            else:
+                if ctx.get('wait_candle'):
+                    if len(a.candles) < 2 or a.candles[-2] == ctx['wait_candle']:
+                        return
+                    ctx.pop('wait_candle', None)
+                signal = a.check_strategy(int(item['instrument_token']), float(item['trade_calculation_percentage']))
+                if not signal:
+                    return
+                side = signal['order_type']
+                ctx['stop'] = signal['stop_loss']
+                candle_range = a.per_trade_candle_based_profit
+            if not math.isfinite(candle_range) or candle_range <= 0:
+                logging.error('Invalid entry candle range for %s', a.tradingsymbol)
+                return
+            ctx['range'] = candle_range
+            self._submit(item, ctx, side, int(item['lot_size']), 'entry')
+            self.sync(a, item)
+
+
+def str_key(value):
+    from .thresholds import key
+    return key(value)
 
 
 class CandleAggregator:
@@ -313,450 +807,13 @@ class CandleAggregator:
             return stop_loss
 
 
-    def place_single_order(self,kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, order_type, quantity, stop_loss, price=None,percentage = 0.00,order_mode="Reverse_side"):
-        log_file = 'order_placement.log'
-        with open(log_file, 'a') as f:  # Open log file in append mode
-            try:
-                # Check for existing orders
-                order_id = None
-
-                f.write(f"----------------------------------------------------------------------------------------------------------------------------\n")
-                f.write(f"----------------------------------------------------------------------------------------------------------------------------\n")
-                f.write(f"Attempting {order_mode } at {datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} to place order for {trading_symbol} - {order_type} {quantity} stop loss {stop_loss} price {price}.\n")
-                if self.close_trade_for_the_day:
-                    f.write(f" Trade Closed for Attempted {order_mode} for {trading_symbol}")
-                    return 
-                # If no existing order, proceed to place a new one
-                if order_type == "Buy":
-                    order_id = kite.place_order(
-                                    variety=kite.VARIETY_REGULAR,  # Set order type to Cover Order
-                                    exchange=exchange,
-                                    tradingsymbol=trading_symbol,
-                                    transaction_type=kite.TRANSACTION_TYPE_BUY,
-                                    quantity=quantity,
-                                    order_type=kite.ORDER_TYPE_MARKET,  # Use MARKET or LIMIT based on your preference
-                                    product=kite.PRODUCT_MIS,  # For intraday trading
-                                    market_protection=10,
-                                )
-
-                elif order_type == "Sell":
-                    order_id = kite.place_order(
-                                    variety=kite.VARIETY_REGULAR,  # Set order type to Cover Order
-                                    exchange=exchange,
-                                    tradingsymbol=trading_symbol,
-                                    transaction_type=kite.TRANSACTION_TYPE_SELL,
-                                    quantity=quantity,
-                                    order_type=kite.ORDER_TYPE_MARKET,  # Use MARKET or LIMIT based on your preference
-                                    product=kite.PRODUCT_MIS,  # For intraday trading
-                                    market_protection=10,
-                                )
-
-                if order_id:
-                    all_orders = kite.orders()
-                    result = not all_orders or all_orders[-1]['status'] != 'REJECTED'
-                    f.write(str(result))
-                    if all_orders==[] or (all_orders!=[] and all_orders[-1]['status'] != 'REJECTED'):
-                        self.current_order_type = order_type
-                        self.current_stop_loss = stop_loss
-                        # Update the current stop loss in the object for the new reverse order
-                        self.order_active = True
-                        f.write(f"{order_type} {order_mode} order placed for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
-                        # Fetch all orders
-                    else:
-                        self.current_order_type = None
-                        self.current_stop_loss = None
-                        # Update the current stop loss in the object for the new reverse order
-                        self.order_active = False
-                        f.write(f"{order_type} {order_mode} order NOT placed REJECTED for {trading_symbol}. Order ID: {order_id}, Stop Loss: {self.current_stop_loss}, Quantity: {quantity}, Price: {price}\n")
-                        sys.exit()
-                f.write(f"Order placed successfully for {trading_symbol}. Order ID: {order_id}\n")
-                return order_id
-
-            except Exception as e:
-                f.write(f"Error placing order for {trading_symbol}: {str(e)}\n")
-                return None
-
-    def handle_reverse_order(self, kite,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
-        """
-        Handles reverse order logic when stop-loss is hit.
-        """
-        # Set up a dedicated logger for this function
-        reverse_order_logger = logging.getLogger("reverse_order_logger")
-        reverse_order_logger.setLevel(logging.DEBUG)
-
-        # Create a file handler specific for reverse order handling logs
-        file_handler = logging.FileHandler("reverse_order.log")
-        file_handler.setLevel(logging.DEBUG)
-
-        # Define a log format and set it for the handler
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-
-        # Add the handler to the logger, avoiding duplicate handlers if the function is called multiple times
-        if not reverse_order_logger.handlers:
-            reverse_order_logger.addHandler(file_handler)
-
-        #reverse_order_logger.info("Executing handle_reverse_order.")
+    
         
-        # Check if stop-loss is hit
-        stop_loss_price = self.current_stop_loss
-        #reverse_order_logger.debug(f"Stop-loss price fetched: {stop_loss_price}")
         
-        # Get the latest tick data to compare the stop-loss price
-        current_price = self.current_candle['close']
-        #reverse_order_logger.debug(f"Current price from candle data: {current_price}")
-
-        # Check stop-loss condition
-        if (self.current_order_type == 'Buy' and stop_loss_price and current_price <= stop_loss_price) or \
-        (self.current_order_type== 'Sell' and stop_loss_price and current_price >= stop_loss_price):
-            
-            reverse_order_logger.info(f"Stop-loss hit for {instrument_token} at price: {current_price}")
-            print(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {stop_loss_price} inside reverse handling function", file=open("reverse_logic entered.log", "a"))
-
-            # Calculate daily profit or loss before reversing the order
-            reverse_order_logger.info("Calculating daily profit or loss.")
-            self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
-            # Stop-loss hit, place reverse order
-            reverse_order_type = "Sell" if strategy_response['order_type'] == "Buy" else "Buy"
-            reverse_order_logger.info(f"Reverse order type determined as: {reverse_order_type}")
-            
-            # Place the reverse order at the stop-loss price for square off
-            # Fetch current positions
-            for position in kite.positions()['net']:
-                if position['tradingsymbol'] ==  trading_symbol and position['quantity']!=0:
-                    #squaringoffopenpositions
-                    reverse_order_id_sq_off = self.place_single_order(
-                                                        kite,
-                                                        instrument_token,
-                                                        trading_symbol,
-                                                        exchange,
-                                                        exit_trades_threshold_points,
-                                                        reverse_order_type,
-                                                        lot_size,
-                                                        stop_loss_price,
-                                                        stop_loss_price,  # Using stop-loss price as the price for the reverse order
-                                                        percentage,
-                                                        order_mode="Square OFF"
-                                                    )
-            # for position in kite.positions()['net']:
-            #     if position['tradingsymbol'] ==  trading_symbol and position['quantity']==0:
-            #         #squaredoffsuccessfully
-            #         self.order_active = False
-            # Place the reverse order at the stop-loss price
-            if self.trade_side == "BOTH":
-                alert_candle = self.candles[-2]
-                self.per_trade_candle_based_profit = (
-                    alert_candle["high"] - alert_candle["low"]
-                )
-                reverse_order_id = self.place_single_order(
-                                                        kite,
-                                                        instrument_token,
-                                                        trading_symbol,
-                                                        exchange,
-                                                        exit_trades_threshold_points,
-                                                        reverse_order_type,
-                                                        lot_size,
-                                                        stop_loss_price,
-                                                        stop_loss_price,  # Using stop-loss price as the price for the reverse order
-                                                        percentage,
-                                                        order_mode="Reverse Mode"
-                                                    )
-                
-                if reverse_order_id:
-                    reverse_order_logger.info(f"Reverse order placed with ID: {reverse_order_id} for {reverse_order_type} on {trading_symbol}")
-                else:
-                    reverse_order_logger.warning(f"Failed to place reverse order for {trading_symbol}.")
-            else:
-                #if order is not both side make order inactive
-                self.order_active = False
-        else:
-            reverse_order_logger.debug("Stop-loss condition not met. No reverse order placed.")
 
     
-    def fetch_and_calculate_daily_profit_loss(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
-        """
-        Fetch orders from Kite API and calculate daily profit or loss, with extensive logging.
-        """
-        # Create a logger
-        # fetch_and_calculate_daily_profit_loss = logging.getLogger("daily_profit_loss_calculation")
-        # fetch_and_calculate_daily_profit_loss.setLevel(logging.DEBUG)
-
-        # # Create a file handler
-        # file_handler = logging.FileHandler("daily_profit_loss_calculation.log")
-        # file_handler.setLevel(logging.DEBUG)
-
-        # # Create a formatter and set it for the file handler
-        # formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        # file_handler.setFormatter(formatter)
-
-        # # Add the file handler to the logger
-        # fetch_and_calculate_daily_profit_loss.addHandler(file_handler)
-
-        # Log an info message
-        #fetch_and_calculate_daily_profit_loss.info("Starting fetch_and_calculate_daily_profit_loss process.")
-        
-        try:
-            # Fetch all orders
-            all_orders = kite.orders()
-            if self.threshold_group:
-                self.threshold_group.observe(all_orders)
-            #fetch_and_calculate_daily_profit_loss.debug(f"Fetched {len(all_orders)} orders from Kite API.")
-
-            # Filter for completed buy/sell orders
-            completed_orders = [
-                order for order in all_orders if order['status'] == 'COMPLETE' and
-                order['transaction_type'] in ['BUY', 'SELL'] and 
-                order['tradingsymbol'] == trading_symbol
-            ]
-            #fetch_and_calculate_daily_profit_loss.debug(f"Filtered completed buy/sell orders. Count: {len(completed_orders)}")
-
-            # Sort orders by timestamp
-            sorted_orders = sorted(completed_orders, key=lambda x: x['order_timestamp'])
-            #fetch_and_calculate_daily_profit_loss.debug("Sorted orders by timestamp.")
-
-            # Calculate daily profit or loss based on the sorted orders
-            daily_profit_loss_per_share = self.calculate_total_profit_loss_per_share(sorted_orders, current_price,trading_symbol)
-            #fetch_and_calculate_daily_profit_loss.info(f"Calculated daily profit/loss: {daily_profit_loss_per_share}")
-            self.write_profit_loss_to_json({trading_symbol:daily_profit_loss_per_share})
-
-
-            # combinedthresholdinstrumentdetails = {}
-            # for single_dict in self.instrument_details_dict[threshold_key(exit_trades_threshold_points)]:
-            #     combinedthresholdinstrumentdetails[single_dict['tradingsymbol']] = single_dict['lot_size']
-
-            trading_symbols_list = [x['tradingsymbol'] for x in  self.instrument_details_dict[threshold_key(exit_trades_threshold_points)]]
-
-            # Assign the daily profit/loss to the profit threshold points
-            self.profit_threshold_points = self.fetch_profit_loss_from_json_dict(trading_symbols_list)
-
-            #self.profit_threshold_points = 0 #assigned to zero for testing
-            #fetch_and_calculate_daily_profit_loss.info(f"Updated profit threshold points for {trading_symbol} and  list {trading_symbols_list}: {self.profit_threshold_points}")
-            if self.profit_threshold_points>=self.active_exit_threshold(exit_trades_threshold_points):
-                self.should_close_trade(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
-
-            # Optional console output
-            print(f"Total Profit/Loss for the day: {daily_profit_loss_per_share} ,self.profit_threshold_points:{self.profit_threshold_points},exit_trades_threshold_points:{exit_trades_threshold_points}")
-
-            #fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
-            return daily_profit_loss_per_share
-        except Exception as error:
-            print("error in fetch_and_calculate_daily_profit_loss",error)
-            #fetch_and_calculate_daily_profit_loss.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
-            return 0
-        
-        
-    def fetch_and_calculate_per_trade_per_instrument_profit_loss(self,kite,current_price,instrument_token, trading_symbol, exchange, per_instrument_exit_trades_threshold_points, strategy_response, lot_size, percentage,order_id):
-        """
-        Fetch orders from Kite API and calculate daily profit or loss, with extensive logging.
-        """
-        
-        try:
-            # Fetch all orders
-            per_trade_profit_loss_per_share = 0
-            all_orders = kite.orders()
-            #fetch_and_calculate_daily_profit_loss.debug(f"Fetched {len(all_orders)} orders from Kite API.")
-
-            # Filter for completed buy/sell orders
-            completed_orders = [
-                order for order in all_orders if order['status'] == 'COMPLETE' and
-                order['transaction_type'] in ['BUY', 'SELL'] and 
-                order['tradingsymbol'] == trading_symbol
-            ]
-
-            # Sort orders by timestamp
-            sorted_orders = sorted(completed_orders, key=lambda x: x['order_timestamp'])
-            #fetch_and_calculate_daily_profit_loss.debug("Sorted orders by timestamp.")
-            if self.order_active:
-                per_trade_profit_loss_per_share = self.calculate_total_profit_loss_per_instrument_per_order(sorted_orders, current_price,trading_symbol,order_id)
-            # Calculate daily profit or loss based on the sorted orders
-            
-            
-            
-            #fetch_and_calculate_daily_profit_loss.info(f"Updated profit threshold points for {trading_symbol} and  list {trading_symbols_list}: {self.profit_threshold_points}")
-            if per_trade_profit_loss_per_share and per_trade_profit_loss_per_share>=(per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)) and self.order_active:
-                self.exit_trade_for_the_instrument(kite,current_price,instrument_token, trading_symbol, exchange, per_instrument_exit_trades_threshold_points,
-                                      strategy_response, lot_size, percentage,per_trade_profit_loss_per_share)
-            # Optional console output
-            print(f"PER TRADE PROFIT LOSS -->{per_trade_profit_loss_per_share},per_ins_exit_trades_threshold_points:{per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)}")
-            
-            #fetch_and_calculate_daily_profit_loss.info("Completed fetch_and_calculate_daily_profit_loss process successfully.")
-            return per_trade_profit_loss_per_share
-        except Exception as error:
-            print("error in fetch_and_calculate_daily_profit_loss per_instrument_exit_trades_threshold_points",error)
-            #fetch_and_calculate_daily_profit_loss.error(f"Error in fetch_and_calculate_daily_profit_loss: {error}", exc_info=True)
-            return 0
-
-    
-    def calculate_total_profit_loss_per_share(self, sorted_orders, current_price,trading_symbol):
-        """
-        Calculate total profit or loss per share, including realized and unrealized P/L.
-        """
-        try:
-            # Set up logging with a FileHandler
-            logger = logging.getLogger("calculate_total_profit_loss_per_share")
-            logger.setLevel(logging.INFO)
-
-            # Avoid duplicate handlers
-            if not logger.handlers:
-                file_handler = logging.FileHandler("calculate_total_profit_loss_per_share.log")
-                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-                file_handler.setFormatter(formatter)
-                logger.addHandler(file_handler)
-
-            realized_profit_loss_per_share = 0  # Realized P/L per share
-            unrealized_profit_loss_per_share = 0  # Unrealized P/L per share
-            self.open_position = False
-            self.open_price = None
-            self.open_quantity = 0
-            self.current_order_type = None
-
-            for order in sorted_orders:
-                avg_price = order['average_price']
-                quantity = order['quantity']  # Keeping track for open positions
-                transaction_type = order['transaction_type']
-
-                if transaction_type == 'BUY':
-                    if not self.open_position:
-                        # Open a new Buy position
-                        self.open_price = avg_price
-                        self.open_quantity = quantity
-                        self.current_order_type = "Buy"
-                        self.open_position = True
-                    elif self.current_order_type == "Sell":
-                        if self.open_quantity == quantity:
-                            # Fully close Sell position
-                            realized_profit_loss_per_share += (self.open_price - avg_price)
-                            self._reset_position()
-                        elif quantity < self.open_quantity:
-                            # Partially close Sell position
-                            realized_profit_loss_per_share += (self.open_price - avg_price)
-                            self.open_quantity -= quantity
-                        else:
-                            pass
-
-                elif transaction_type == 'SELL':
-                    if not self.open_position:
-                        # Open a new Sell position
-                        self.open_price = avg_price
-                        self.open_quantity = quantity
-                        self.current_order_type = "Sell"
-                        self.open_position = True
-                    elif self.current_order_type == "Buy":
-                        if self.open_quantity == quantity:
-                            # Fully close Buy position
-                            realized_profit_loss_per_share += (avg_price - self.open_price)
-                            self._reset_position()
-                        elif quantity < self.open_quantity:
-                            # Partially close Buy position
-                            realized_profit_loss_per_share += (avg_price - self.open_price)
-                            self.open_quantity -= quantity
-                        else:
-                            pass
-
-            # Calculate unrealized profit or loss per share for open positions
-            if self.open_position:
-                if self.current_order_type == "Buy":
-                    unrealized_profit_loss_per_share = (current_price - self.open_price)
-                elif self.current_order_type == "Sell":
-                    unrealized_profit_loss_per_share = (self.open_price - current_price)
-
-            # Total profit or loss per share
-            total_profit_loss_per_share = realized_profit_loss_per_share + unrealized_profit_loss_per_share
-
-            # logging.info(f"Realized P/L per share: {realized_profit_loss_per_share}")
-            # logging.info(f"Unrealized P/L per share: {unrealized_profit_loss_per_share}")
-            logging.info(f"Total P/L per share: {total_profit_loss_per_share}")
-
-            return total_profit_loss_per_share
-
-        except Exception as error:
-            logging.error(f"Error in calculate_total_profit_loss_per_share: {error}", exc_info=True)
-            return 0
             
         
-    def calculate_total_profit_loss_per_instrument_per_order(self, sorted_orders, current_price, trading_symbol, order_id):
-        """
-        Calculate total profit or loss for a specific order including realized and unrealized P/L.
-        """
-        try:
-            # Set up logging with a FileHandler
-            logger = logging.getLogger("calculate_total_profit_loss_per_share")
-            logger.setLevel(logging.INFO)
-
-            # Avoid duplicate handlers
-            if not logger.handlers:
-                file_handler = logging.FileHandler("calculate_total_profit_loss_per_share.log")
-                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-                file_handler.setFormatter(formatter)
-                logger.addHandler(file_handler)
-
-            realized_profit_loss_per_share = 0  # Realized P/L per share
-            unrealized_profit_loss_per_share = 0  # Unrealized P/L per share
-            self.open_position = False
-            self.open_price = None
-            self.open_quantity = 0
-            self.current_order_type = None
-
-            for order in sorted_orders:
-                avg_price = order['average_price']
-                quantity = order['quantity']
-                transaction_type = order['transaction_type']
-                
-                # Process only the specific order
-                # if order['order_id'] != order_id:
-                #     continue
-
-                if transaction_type == 'BUY':
-                    if not self.open_position:
-                        # Open a new Buy position
-                        self.open_price = avg_price
-                        self.open_quantity = quantity
-                        self.current_order_type = "Buy"
-                        self.open_position = True
-                    elif self.current_order_type == "Sell":
-                        if self.open_quantity == quantity:
-                            # Fully close Sell position
-                            realized_profit_loss_per_share += (self.open_price - avg_price)
-                            self._reset_position()
-                        elif quantity < self.open_quantity:
-                            # Partially close Sell position
-                            realized_profit_loss_per_share += (self.open_price - avg_price)
-                            self.open_quantity -= quantity
-
-                elif transaction_type == 'SELL':
-                    if not self.open_position:
-                        # Open a new Sell position
-                        self.open_price = avg_price
-                        self.open_quantity = quantity
-                        self.current_order_type = "Sell"
-                        self.open_position = True
-                    elif self.current_order_type == "Buy":
-                        if self.open_quantity == quantity:
-                            # Fully close Buy position
-                            realized_profit_loss_per_share += (avg_price - self.open_price)
-                            self._reset_position()
-                        elif quantity < self.open_quantity:
-                            # Partially close Buy position
-                            realized_profit_loss_per_share += (avg_price - self.open_price)
-                            self.open_quantity -= quantity
-
-            # Calculate unrealized profit or loss per share for open positions
-            if self.open_position:
-                if self.current_order_type == "Buy":
-                    unrealized_profit_loss_per_share = (current_price - self.open_price)
-                elif self.current_order_type == "Sell":
-                    unrealized_profit_loss_per_share = (self.open_price - current_price)
-
-            # Total profit or loss per share for the specific order
-            total_profit_loss_per_share = unrealized_profit_loss_per_share
-
-            logging.info(f"Total P/L for order {order_id}: {total_profit_loss_per_share}")
-
-            return total_profit_loss_per_share
-
-        except Exception as error:
-            logging.error(f"Error in calculate_total_profit_loss_per_share: {error}", exc_info=True)
-            return 0
 
 
     def update_trailing_stop_loss(self, kite, percentage,tradingsymbol):
@@ -815,165 +872,6 @@ class CandleAggregator:
         except Exception as error:
             logger.exception(f"Error in update_trailing_stop_loss for {tradingsymbol}: {error}")
 
-
-    def should_close_trade(self,kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage):
-        try:
-            """
-            Determine if the trade should be closed based on the exit trades threshold points.
-            
-            Args:
-                instrument_token (int): The token of the instrument.
-                exit_trades_threshold_points (float): The threshold for exiting trades.
-            
-            Returns:
-                bool: True if the trade should be closed, False otherwise.
-            """
-            # Set up a dedicated logger for this function
-            close_order_logger = logging.getLogger("close_trade_logger")
-            close_order_logger.setLevel(logging.DEBUG)
-
-            # Avoid duplicate handlers
-            if not close_order_logger.handlers:
-                file_handler = logging.FileHandler("close_trade_logger.log")
-                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-                file_handler.setFormatter(formatter)
-                close_order_logger.addHandler(file_handler)
-
-            if self.close_trade_for_the_day:
-                print("in should_close_trade close_trade already for",trading_symbol)
-                return True
-            if not self.close_trade_for_the_day and self.profit_threshold_points and self.profit_threshold_points>=self.active_exit_threshold(exit_trades_threshold_points) and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'):
-                close_order_logger.info("Active group target=%s; original group target=%s", self.active_exit_threshold(exit_trades_threshold_points), exit_trades_threshold_points)
-                close_order_logger.info(f"Threshold hit for {exit_trades_threshold_points} and {self.profit_threshold_points} and {self.profit_threshold_points>=self.active_exit_threshold(exit_trades_threshold_points)} {trading_symbol} at price: {current_price}")
-
-                # Calculate daily profit or loss before reversing the order
-                #self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
-                # Stop-loss hit, place reverse order
-                reverse_order_type = "Sell" if self.current_order_type and self.current_order_type == "Buy" else "Buy"
-                close_order_logger.info(f"Reverse order type determined as: {reverse_order_type}")
-                
-                # Place the reverse order at the stop-loss price for square off
-                # Fetch current positions
-                for position in kite.positions()['net']:
-                    if position['tradingsymbol'] ==  trading_symbol and position['quantity']!=0:
-                        #squaringoffopenpositions
-                        close_order_logger.info(f"Reverse order placement  {reverse_order_type} for {trading_symbol} with {position['quantity']}")
-                        reverse_order_id_sq_off = self.place_single_order(
-                                                            kite,
-                                                            instrument_token,
-                                                            trading_symbol,
-                                                            exchange,
-                                                            exit_trades_threshold_points,
-                                                            reverse_order_type,
-                                                            lot_size,
-                                                            current_price,
-                                                            current_price,  # Using stop-loss price as the price for the reverse order
-                                                            percentage,
-                                                            order_mode="Final Square Off"
-                                                        )
-                close_order_logger.info(
-                                            f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} - Closing trade for {trading_symbol} due to threshold."
-                                            f"Closing trade for the day for instrument {instrument_token}. "
-                                            f"Exit threshold points: {exit_trades_threshold_points}, "
-                                            f"Profit threshold points: {self.profit_threshold_points}"
-                                        )
-                logging.info(
-                    f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} - Closing trade for {trading_symbol} due to threshold."
-                    f"Closing trade for the day for instrument {instrument_token}. "
-                    f"Exit threshold points: {exit_trades_threshold_points}, "
-                    f"Profit threshold points: {self.profit_threshold_points}"
-                )
-                self.close_trade_for_the_day = True
-                return True  # Trade should be closed
-            return False  # Trade should not be closed
-        except Exception as error:
-            logging.error(f"Error should_close_trade: {str(error)}")
-            close_order_logger.info(f"Error should_close_trade: {str(error)}")
-            return False
-
-
-    def exit_trade_for_the_instrument(self,kite,current_price,instrument_token, trading_symbol, exchange, per_instrument_exit_trades_threshold_points,
-                                      strategy_response, lot_size, percentage,per_trade_profit_loss_per_share):
-        try:
-            """
-            Determine if the trade should be closed based on the exit trades threshold points.
-            
-            Args:
-                instrument_token (int): The token of the instrument.
-                exit_trades_threshold_points (float): The threshold for exiting trades.
-            
-            Returns:
-                bool: True if the trade should be closed, False otherwise.
-            """
-            # Set up a dedicated logger for this function
-            close_order_logger = logging.getLogger("close_trade_logger")
-            close_order_logger.setLevel(logging.DEBUG)
-            reverse_order_id_sq_off = None
-            # Avoid duplicate handlers
-            if not close_order_logger.handlers:
-                file_handler = logging.FileHandler("close_trade_logger.log")
-                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-                file_handler.setFormatter(formatter)
-                close_order_logger.addHandler(file_handler)
-
-            if self.close_trade_for_the_day:
-                print("in should_close_trade close_trade already for",trading_symbol)
-                return True
-            if not self.close_trade_for_the_day and per_trade_profit_loss_per_share and\
-                per_trade_profit_loss_per_share>=(per_instrument_exit_trades_threshold_points*(self.per_trade_candle_based_profit)) and (self.current_order_type == 'Buy' or self.current_order_type== 'Sell'):
-                close_order_logger.info(f"Threshold hit for {per_instrument_exit_trades_threshold_points} and\
-                    {per_trade_profit_loss_per_share} and \
-                        {per_trade_profit_loss_per_share>=per_instrument_exit_trades_threshold_points} {trading_symbol} at price: {current_price}")
-
-                # Calculate daily profit or loss before reversing the order
-                #self.fetch_and_calculate_daily_profit_loss(kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, strategy_response, lot_size, percentage)
-                # Stop-loss hit, place reverse order
-                reverse_order_type = "Sell" if self.current_order_type and self.current_order_type == "Buy" else "Buy"
-                close_order_logger.info(f"Reverse order type determined as: {reverse_order_type}")
-                
-                # Place the reverse order at the stop-loss price for square off
-                # Fetch current positions
-                for position in kite.positions()['net']:
-                    if position['tradingsymbol'] ==  trading_symbol and position['quantity']!=0:
-                        #squaringoffopenpositions
-                        close_order_logger.info(f"Reverse order placement  {reverse_order_type} for {trading_symbol} with {position['quantity']}")
-                        reverse_order_id_sq_off = self.place_single_order(
-                                                            kite,
-                                                            instrument_token,
-                                                            trading_symbol,
-                                                            exchange,
-                                                            per_instrument_exit_trades_threshold_points,
-                                                            reverse_order_type,
-                                                            lot_size,
-                                                            current_price,
-                                                            current_price,  # Using stop-loss price as the price for the reverse order
-                                                            percentage,
-                                                            order_mode="Interim Square Off"
-                                                        )
-                close_order_logger.info(
-                                            f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} - Closing trade for {trading_symbol} due to threshold."
-                                            f"exiting trade for instrument small profit  {instrument_token}. "
-                                            f"Exit threshold points: {per_instrument_exit_trades_threshold_points}, "
-                                            f"Per Trade Profit threshold points: {per_trade_profit_loss_per_share}"
-                                        )
-                logging.info(
-                    f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} - Closing trade for {trading_symbol} due to threshold."
-                    f"exiting trade for instrument small profit {instrument_token}. "
-                    f"Exit threshold points: {per_instrument_exit_trades_threshold_points}, "
-                    f"Per Trade Profit threshold points: {per_trade_profit_loss_per_share}"
-                )
-                #self.close_trade_for_the_day = True
-                if reverse_order_id_sq_off:
-                    self.just_closed_trade = True
-                    self.just_closed_trade_last_candle = self.candles[-2]  
-                    self.order_active = False
-                    self.current_order_type = None
-                return True  # Trade should be closed
-            return False  # Trade should not be closed
-        except Exception as error:
-            logging.error(f"Error should_close_trade: {str(error)}")
-            close_order_logger.info(f"Error should_close_trade: {str(error)}")
-            return False
 
     def write_profit_loss_to_json(self,profit_loss_data, filename="current_profit_loss.json"):
         """
@@ -1067,6 +965,10 @@ class WebSocketHandler:
         for item in instruments:
             self.candle_aggregators[item['instrument_token']].threshold_group = self.threshold_groups[threshold_key(item['exit_trades_threshold_points'])]
 
+        self.execution = ExecutionEngine(kite, instruments, self.threshold_groups,
+            state_path=os.getenv('TRADING_STATE_PATH', 'trading_execution_state.json'))
+        self.kite_ticker.on_order_update = self.execution.on_order_update
+
         # Define on_ticks method
         self.kite_ticker.on_ticks = self.on_ticks
         self.kite_ticker.on_connect = self.on_connect
@@ -1076,10 +978,12 @@ class WebSocketHandler:
         self.kite_ticker.on_reconnect = self.on_reconnect
 
     def on_connect(self, ws, response):
+        self.execution.connected = True
         logging.info("WebSocket connected. Subscribing to instruments.")
         self.kite_ticker.subscribe(self.instrument_tokens)
 
     def on_close(self, ws, code, reason):
+        self.execution.connected = False
         logging.info(f"WebSocket closed. {code} with reason {reason}")
     def on_error(self, ws, code, reason):
         logging.error(f"WebSocket encountered an error: Code {code}, Reason: {reason}.")
@@ -1104,219 +1008,38 @@ class WebSocketHandler:
             logging.error(f"Error while reconnecting WebSocket: {e}")
 
     def on_ticks(self, ws, ticks):
-        # Process each tick and store candles
-        try:
-            #logging.info(f"Received ticks: {ticks}")
-            print(f"datetime:{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} Received ticks: {ticks}", file=open('ticks.txt', 'a'))
-            current_datetime = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
-            # Check if the current time is before 9 AM
-            if  datetime.datetime.now(ZoneInfo("Asia/Kolkata")).hour < 9:
-                # Continue if the time is before 9 AM
-                return None
-            
-            for tick in ticks:
-                try:
-                    instrument_token = tick['instrument_token']
-                    #logging.info(f"Processing tick for instrument_token: {instrument_token}")
-                    #logging.debug(f"Tick data: {tick}")
-
-                    if current_datetime.hour>=23:
-                        print("Time More than 11 PM, Bot Will not trade further for the day")
-                        continue
-                    if current_datetime.hour < 9:
-                        print("Time less than 9 AM, trading not started yet")
-                        continue  # Skip the rest of the loop until it's 9:15 AM or later
-
-                    # Get instrument-specific data
-                    instrument_data = next((x for x in self.instruments if int(x['instrument_token']) == instrument_token), None)
-                    if instrument_data is None:
-                        logging.error(f"Instrument data not found for token: {instrument_token}")
-                        continue
-
-
-                    logging.info(f"Instrument data found for token: {instrument_token}, Data: {instrument_data}")
-                    lot_size = int(instrument_data['lot_size'])
-                    percentage = float(instrument_data['trade_calculation_percentage'])
-                    trading_symbol = instrument_data['instrument_details']['tradingsymbol']
-                    exchange = instrument_data['instrument_details']['exchange']
-                    exit_trades_threshold_points = float(instrument_data['exit_trades_threshold_points'])
-                    per_trade_exit_trades_threshold_points = float(instrument_data['per_trade_exit_trades_threshold_points'])
-
-                    if exchange in ['NFO','NSE','BSE'] and current_datetime.hour>=16:
-                        print("Time More than 3 PM for equity, Bot Will not trade further for the day")
-                        continue
-
-                    if exchange in ['NFO','NSE','BSE'] and (current_datetime.hour < 9 or (current_datetime.hour == 9 and current_datetime.minute < 15)):
-                        continue  # Skip the rest of the loop until it's 9:15 AM or later
-
-                    tick['current_datetime'] = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
-
-                    # Process the tick using the respective CandleAggregator for the instrument
-                    candle_aggregator = self.candle_aggregators.get(str(instrument_token))
-                    if candle_aggregator is None:
-                        logging.error(f"Candle aggregator not found for token: {instrument_token}")
-                        continue
-
-                    # Call the async function directly
-                    #asyncio.run(candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite))
-
-                    logging.info("tsymbol:order_active:exit,current_profit,closed - %s,%s, %s, %s, %s, %s", 
-                                        str(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-                                        trading_symbol, 
-                                        candle_aggregator.order_active, 
-                                        exit_trades_threshold_points, 
-                                        candle_aggregator.profit_threshold_points, 
-                                        candle_aggregator.close_trade_for_the_day)
-
-
-                    if candle_aggregator.close_trade_for_the_day:
-                        logging.info(
-                            f"closed trade for the day for instrument {trading_symbol}. "
-                            f"Exit threshold points: {exit_trades_threshold_points}, "
-                            f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
-                        )
-                        print("------------------closed1--------------------------------",trading_symbol,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
-                        continue
-
-                    trading_symbols_list = [x['tradingsymbol'] for x in  candle_aggregator.instrument_details_dict[threshold_key(exit_trades_threshold_points)]]
-                    print(trading_symbols_list)
-                    if not candle_aggregator.order_active and (trading_symbol in trading_symbols_list) and not candle_aggregator.close_trade_for_the_day:
-                        # Assign the daily profit/loss to the profit threshold points
-                        candle_aggregator.profit_threshold_points = candle_aggregator.fetch_profit_loss_from_json_dict(trading_symbols_list)
-                        if candle_aggregator.profit_threshold_points>=candle_aggregator.active_exit_threshold(exit_trades_threshold_points):
-                            logging.info(
-                            f"****************1234*****************************************************"
-                            f"closing trade for the day for instrument at second stage {trading_symbol}. "
-                            f"Exit threshold points: {exit_trades_threshold_points}, "
-                            f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
-                            )
-                            candle_aggregator.close_trade_for_the_day = True
-                    
-                    
-                    logging.info(f"Candle aggregator found for token: {instrument_token}")
-                    candle_aggregator.process_tick(tick)
-                    
-                    if candle_aggregator.just_closed_trade and candle_aggregator.just_closed_trade_last_candle:
-                        if candle_aggregator.candles[-2] == candle_aggregator.just_closed_trade_last_candle:
-                            logging.info(f"Just closed trade for token {trading_symbol} at candle ineligible for further processing, skipping.")
-                            continue
-                        else:
-                            logging.info(f"Just Activated trade for token {trading_symbol} at candle, now Eligible for further processing")
-                            print(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - Just Activated trade for token {trading_symbol} at candle, now Eligible for further processing", file=open("eligibility.log", "a"))
-                            candle_aggregator.just_closed_trade = False
-                            candle_aggregator.just_closed_trade_last_candle = None
-
-                        
-                        
-                    # Log the current candle and updated tick info
-                    #logging.debug(f"Updated tick processed: {tick}")
-                    #logging.debug(f"Current candle: {candle_aggregator.current_candle}")
-
-                    # Update trailing stop loss based on the latest tick
-                    new_stop_loss = candle_aggregator.update_trailing_stop_loss(self.kite, percentage,trading_symbol)
-                    logging.info(f"Updated trailing stop loss for token {instrument_token}: {new_stop_loss}")
-
-                    # Check if the current price hits the stored stop loss
-                    current_price = candle_aggregator.current_candle['close']
-                    # Call the async function directly
-                    #smallprofitbaseperinstrumentexit
-                    candle_aggregator.fetch_and_calculate_per_trade_per_instrument_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, per_trade_exit_trades_threshold_points, {}, lot_size, percentage,candle_aggregator.order_id)
-                    if candle_aggregator.just_closed_trade:
-                        logging.info(f"Just closed trade for token {trading_symbol} at candle, ntt Eligible for further processing")
-                        continue
-                    candle_aggregator.fetch_and_calculate_daily_profit_loss(self.kite,current_price,instrument_token, trading_symbol, exchange, exit_trades_threshold_points, {}, lot_size, percentage)
-                    logging.info(f"Current price for token {instrument_token}: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}, Order Type:{candle_aggregator.current_order_type}")
-                    if (candle_aggregator.order_active and
-                            ((candle_aggregator.current_order_type == 'Buy' and candle_aggregator.current_stop_loss and current_price <= candle_aggregator.current_stop_loss) or
-                            (candle_aggregator.current_order_type == 'Sell' and candle_aggregator.current_stop_loss and current_price >= candle_aggregator.current_stop_loss))):
-                        
-                        # Stop-loss hit, handle reverse order
-                        logging.warning(f"Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss}")
-                        print(f"{datetime.datetime.now(ZoneInfo('Asia/Kolkata'))} Stop-loss hit for {instrument_token}. Current price: {current_price}, Stop-loss: {candle_aggregator.current_stop_loss},Order Type:{candle_aggregator.current_order_type}", file=open("reverse_logic entered.log", "a"))
-                        candle_aggregator.handle_reverse_order(
-                            self.kite,
-                            instrument_token, 
-                            trading_symbol,
-                            exchange,
-                            exit_trades_threshold_points,
-                            {'order_type': candle_aggregator.current_order_type, 'stop_loss': candle_aggregator.current_stop_loss}, 
-                            lot_size, 
-                            percentage
-                        )
-
-                        # Mark order as inactive to prevent new orders until a fresh signal
-                        #candle_aggregator.order_active = False  
-                        logging.info(f"Reverse order added continuing the flow")
-                        continue
-                    if (candle_aggregator.order_active):
-                        print("the order is already active, continuing exection")
-                        continue
-                    # Check strategy based on the candle data and the specific percentage
-                    strategy_response = candle_aggregator.check_strategy(instrument_token, percentage)
-                    #logging.debug(f"Strategy response for token {instrument_token}: {strategy_response}")
-
-
-                    if candle_aggregator.close_trade_for_the_day:
-                        logging.info(
-                            f"------------------closed--------------------------------"
-                            f"Part 2 closed trade for the day for instrument {trading_symbol}. "
-                            f"Exit threshold points: {exit_trades_threshold_points}, "
-                            f"Profit threshold points: {candle_aggregator.profit_threshold_points}"
-                            f"------------------****--------------------------------"
-                        )
-                        print("------------------closed--------------------------------",trading_symbol,exit_trades_threshold_points,candle_aggregator.profit_threshold_points)
-                        continue
-
-                    #this will be first order placement when no order has been placed for the day, rest 
-                    if strategy_response and not candle_aggregator.order_active:
-                        logging.info(f"Placing order for token {instrument_token} based on strategy through normal mode")
-                        # Place order with lot size and stop loss from strategy
-                        order_id = candle_aggregator.place_single_order(
-                            self.kite,
-                            instrument_token,
-                            trading_symbol,
-                            exchange,
-                            exit_trades_threshold_points,
-                            strategy_response['order_type'],
-                            lot_size,  # Quantity based on the lot size
-                            strategy_response['stop_loss'],
-                            current_price,
-                            order_mode="Normal Order"
-                        )
-                        if order_id:
-                            logging.info(f"Order placed successfully: {order_id} for {strategy_response['order_type']} {instrument_token}")
-
-                            # Mark the order as active and store the current stop loss and order type
-                            candle_aggregator.order_active = True
-                            #make false
-                            #candle_aggregator.order_active = False
-                            candle_aggregator.current_stop_loss = strategy_response['stop_loss']
-                            candle_aggregator.order_type = strategy_response['order_type']
-
-                            # Update trailing stop loss immediately after placing the order
-                            candle_aggregator.update_trailing_stop_loss(self.kite, percentage,trading_symbol)
-                            logging.info(f"Trailing stop loss updated after placing order for {instrument_token}.")
-                        else:
-                            logging.error(f"Failed to place order for token {instrument_token}. Strategy response: {strategy_response}")
-
-                except KeyError as ke:
-                    logging.error(f"KeyError processing tick for token {tick.get('instrument_token', 'Unknown')}: {ke}")
-                    logging.debug(f"Tick data at KeyError: {tick}")
-                    return None
-                except Exception as e:
-                    logging.error(f"Error processing tick for token {tick.get('instrument_token', 'Unknown')}: {e}")
-                    logging.debug(f"Exception details: {str(e)}. Tick data: {tick}")
-                    return None
-
-        except Exception as error:
-            logging.error(f"Error in on_ticks: {error}")
-            logging.debug(f"Exception details: {str(error)}. Ticks: {ticks}")
-            return None
-
-
+        """Mark positions with live prices, then evaluate the existing candle strategy."""
+        now = datetime.datetime.now(ZoneInfo('Asia/Kolkata'))
+        eligible = []
+        for tick in ticks:
+            item = next((i for i in self.instruments
+                         if int(i['instrument_token']) == tick.get('instrument_token')), None)
+            if item is None or now.hour < 9 or now.hour >= 23:
+                continue
+            exchange = item['instrument_details']['exchange']
+            if exchange in ('NFO', 'NSE', 'BSE') and (now.hour >= 16 or
+                    (now.hour == 9 and now.minute < 15)):
+                continue
+            try:
+                price = float(tick['last_price'])
+                if not math.isfinite(price) or price <= 0:
+                    continue
+                self.execution.mark(item, price)
+                eligible.append((item, tick, price))
+            except (TypeError, ValueError, KeyError):
+                logging.exception('Invalid tick')
+        for item, tick, price in eligible:
+            a = self.candle_aggregators[str(item['instrument_token'])]
+            try:
+                tick['current_datetime'] = now
+                a.process_tick(tick)
+                self.execution.process(a, item, price)
+            except Exception:
+                logging.exception('Tick processing failed for %s', a.tradingsymbol)
 
     def stop_websocket(self):
         """Stop the WebSocket and handle cleanup, with logging."""
+        self.execution.stop()
         try:
             # Set up logging with a FileHandler
             logger = logging.getLogger("stop_websocket")
@@ -1359,6 +1082,7 @@ class WebSocketHandler:
     def run_websocket(self):
         """ Start the WebSocket and listen for ticks, with connection checks and retries. """
         # Connect to the WebSocket initially
+        self.execution.start()
         self.kite_ticker.connect(threaded=True)
 
         # Backoff parameters
