@@ -444,6 +444,10 @@ class CandleAggregator:
             #         self.order_active = False
             # Place the reverse order at the stop-loss price
             if self.trade_side == "BOTH":
+                alert_candle = self.candles[-2]
+                self.per_trade_candle_based_profit = (
+                    alert_candle["high"] - alert_candle["low"]
+                )
                 reverse_order_id = self.place_single_order(
                                                         kite,
                                                         instrument_token,
