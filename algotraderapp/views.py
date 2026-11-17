@@ -1,4 +1,4 @@
-from .thresholds import fallback
+from .supertrend import validate_config
 from django.shortcuts import render
 from .product_setting import mongo_port, mongo_url,mongo_username,mongo_password,mongo_database
 from rest_framework.decorators import api_view
@@ -92,10 +92,10 @@ def access_web_socket(request):
             with ws_lock:
                 # Check if WebSocket handler is already running
                 if ws_handler is None:
-                    save_json_to_mongodb(directory=".")
                     instrument_details = view_all_added_trading_instrument()
-                    ws_handler = run_script.WebSocketHandler(kite, instrument_details)
-                    threading.Thread(target=ws_handler.run_websocket).start()
+                    handler = run_script.WebSocketHandler(kite, instrument_details)
+                    handler.run_websocket()
+                    ws_handler = handler
                 else:
                     return JsonResponse({"Websocket Already Running": True})            
             return JsonResponse({"Websocket Started": True,"access_token": access_token})
@@ -198,15 +198,15 @@ def add_trading_instrument(request):
         lot_size = request.POST['lot_size']
         instrument_token = request.POST['instrument_token']
         exit_trades_threshold_points= request.POST['exit_trades_threshold_points']
-        first_loss_exit_threshold_points = request.POST.get('first_loss_exit_threshold_points', '')
+        timeframe = request.POST['timeframe']
+        trade_side = request.POST.get('trade_side', 'BOTH')
         try:
-            fallback(dict(exit_trades_threshold_points=exit_trades_threshold_points, first_loss_exit_threshold_points=first_loss_exit_threshold_points))
-        except ValueError as error:
+            config = validate_config(dict(lot_size=lot_size, timeframe=timeframe,
+                trade_side=trade_side, exit_trades_threshold_points=exit_trades_threshold_points,
+                supertrend_length=request.POST.get('supertrend_length', 7),
+                supertrend_factor=request.POST.get('supertrend_factor', 2)))
+        except (ValueError, TypeError) as error:
             return JsonResponse({'error': str(error)}, status=400)
-        per_trade_exit_trades_threshold_points= request.POST['per_trade_exit_trades_threshold_points']
-        trade_calculation_percentage= request.POST['trade_calculation_percentage']
-        timeframe= request.POST['timeframe']
-        trade_side = request.POST.get('trade_side','BOTH')
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}")
         database = client[mongo_database]  # Access the database
         collection = database['tradeconfiguration']  # Replace 'mycollection' with your collection name
@@ -226,23 +226,21 @@ def add_trading_instrument(request):
             "lot_size":lot_size,
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
-            "first_loss_exit_threshold_points":first_loss_exit_threshold_points,
-            "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
-            "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
             "instrument_details":instrument_details,
-            "trade_side":trade_side
+            "supertrend_length":config["supertrend_length"],
+            "supertrend_factor":config["supertrend_factor"],
+            "trade_side":config["trade_side"]
         })
         return JsonResponse({
             "lot_size":lot_size,
             "instrument_token":instrument_token,
             "exit_trades_threshold_points":exit_trades_threshold_points,
-            "first_loss_exit_threshold_points":first_loss_exit_threshold_points,
-            "per_trade_exit_trades_threshold_points":per_trade_exit_trades_threshold_points,
-            "trade_calculation_percentage":trade_calculation_percentage,
             "timeframe":timeframe,
             "instrument_details":instrument_details,
-            "trade_side":trade_side,
+            "supertrend_length":config["supertrend_length"],
+            "supertrend_factor":config["supertrend_factor"],
+            "trade_side":config["trade_side"],
             "insertion_id":str(result.inserted_id)})
     except Exception as error:
         return JsonResponse({"Some Error Occured":True},status = 500)
@@ -306,7 +304,7 @@ def update_trading_instrument(request):
         client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}/")
         data = {}
         for key,value in request.POST.items():
-            if key not in ["first_loss_exit_threshold_points","lot_size","instrument_token","exit_trades_threshold_points","per_trade_exit_trades_threshold_points","trade_calculation_percentage","timeframe","trade_side"]:
+            if key not in ["supertrend_length","supertrend_factor","lot_size","instrument_token","exit_trades_threshold_points","timeframe","trade_side"]:
                 return JsonResponse({"Invalid Parameter":key})
             else:
                 if key =="instrument_token":
@@ -319,9 +317,12 @@ def update_trading_instrument(request):
         if old_data is None:
             return JsonResponse({'error': 'Instrument not found'}, status=404)
         try:
-            fallback({**old_data, **data})
-        except ValueError as error:
+            validated = validate_config({**old_data, **data})
+            data = {key: validated[key] for key in data}
+        except (ValueError, TypeError) as error:
             return JsonResponse({'error': str(error)}, status=400)
+        if not data:
+            return JsonResponse({"error": "No configuration fields supplied"}, status=400)
         old_data['old_id'] = str(old_data['_id'])
         old_data['action'] = 'updation'
         old_data['timeofaction'] = str(datetime.datetime.now(ZoneInfo("Asia/Kolkata")))
@@ -419,71 +420,4 @@ def view_all_added_trading_instrument():
         collection = database['tradeconfiguration']  # Replace 'mycollection' with your collection name
         return list(collection.find({},{"_id":0}))
     except Exception as error:
-        return []    
-
-def save_json_to_mongodb(directory="."):
-    try:
-        client = MongoClient(f"mongodb://{mongo_username}:{mongo_password}@{mongo_url}:{mongo_port}/")
-        database = client['CandleData']  # Access the database
-        collection = database['tradeconfiguration']
-        for filename in os.listdir(directory):
-            # Check if the file is a JSON file
-            if filename.endswith("_candles.json"):
-                # Construct the file path
-                file_path = os.path.join(directory, filename)
-                
-                try:
-                    # Load the JSON data from the file
-                    with open(file_path, 'r') as file:
-                        data = json.load(file)
-                    
-                    # Get the date from the first record in the JSON file
-                    if data:
-                        start_date = data[0]["start_time"].split(" ")[0]  # Extract date part only
-                        
-                        # Format collection name with the extracted date
-                        # collection_name = start_date.replace('-', '')  # Convert to YYYYMMDD
-                        # collection_name  = filename.replace("_candles.json",'_') + start_date.replace('-', '_')
-                        # collection = database[collection_name]
-                        # # Insert the data into the specific collection
-                        # collection.insert_many(data)
-                        # print(f"Data from {filename} inserted into MongoDB collection '{collection_name}'.")
-                    
-                    # Delete the JSON file after successful insertion
-                    os.remove(file_path)
-                    print(f"File {filename} deleted after insertion.")
-                
-                except Exception as e:
-                    print(f"Error processing file {filename}: {e}")
-            elif filename.endswith(".txt"):
-                if filename == "requirements.txt":
-                    continue
-                file_path = os.path.join(directory, filename)
-                # Delete the JSON file after successful insertion
-                os.remove(file_path)
-                print(f"File {filename} deleted txt file")
-            elif filename.endswith(".log"):
-                if filename == "server.log":
-                    continue
-                file_path = os.path.join(directory, filename)
-                # Delete the JSON file after successful insertion
-                os.remove(file_path)
-                print(f"File {filename} deleted txt file")
-            elif filename == "current_profit_loss.json":
-                file_path = os.path.join(directory, filename)
-                # Delete the JSON file after successful insertion
-                os.remove(file_path)
-                print(f"File {filename} deleted json file")
-            elif filename.startswith("buy_alert_"):
-                file_path = os.path.join(directory, filename)
-                # Delete the JSON file after successful insertion
-                os.remove(file_path)
-                print(f"File {filename} deleted json file")
-            elif filename.startswith("sell_alert_"):
-                file_path = os.path.join(directory, filename)
-                # Delete the JSON file after successful insertion
-                os.remove(file_path)
-                print(f"File {filename} deleted json file")
-
-    except Exception as error:
-        print("saving json data",error)
+        return []

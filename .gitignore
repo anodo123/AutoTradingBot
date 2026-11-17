@@ -2,3 +2,6 @@
 venv/
 __pycache__/
 .pyc
+*_minute_candles.json
+supertrend_trading_state.json
+*.json.tmp
